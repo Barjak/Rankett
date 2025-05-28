@@ -1,4 +1,4 @@
-// Pipeline/Core/ProcessingStage.swift
+
 import Foundation
 
 protocol ProcessingStage {

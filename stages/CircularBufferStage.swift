@@ -1,4 +1,3 @@
-// Pipeline/Stages/Input/CircularBufferStage.swift
 import Foundation
 
 class CircularBufferStage: ProcessingStage {
@@ -22,7 +21,48 @@ class CircularBufferStage: ProcessingStage {
         self.bufferSize = fftSize * 2
         self.circularBuffer = Array(repeating: 0, count: bufferSize)
     }
-    
+    func write(_ input: [Float]) {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+
+        if input.count > bufferSize - samplesInBuffer {
+            print("Warning: CircularBuffer overflow, dropping \(input.count - (bufferSize - samplesInBuffer)) samples")
+        }
+
+        for sample in input {
+            circularBuffer[writeIndex] = sample
+            writeIndex = (writeIndex + 1) % bufferSize
+            samplesInBuffer = min(samplesInBuffer + 1, bufferSize)
+        }
+    }
+    func extractWindows(maxWindows: Int) -> [[Float]] {
+        bufferLock.lock()
+        defer { bufferLock.unlock() }
+
+        let availableWindows = (samplesInBuffer >= fftSize)
+            ? ((samplesInBuffer - fftSize) / hopSize + 1)
+            : 0
+
+        let windowsToExtract = min(availableWindows, maxWindows)
+
+        var extractedWindows: [[Float]] = []
+
+        for i in 0..<windowsToExtract {
+            var window = [Float](repeating: 0, count: fftSize)
+            let windowOffset = i * hopSize
+            let readIndex = (writeIndex - samplesInBuffer + windowOffset + bufferSize) % bufferSize
+
+            for j in 0..<fftSize {
+                window[j] = circularBuffer[(readIndex + j) % bufferSize]
+            }
+
+            extractedWindows.append(window)
+        }
+
+        samplesInBuffer -= (windowsToExtract * hopSize)
+        return extractedWindows.reversed()  // Most recent first
+    }
+
     func process(_ input: [Float]) -> [[Float]] {
         bufferLock.lock()
         defer { bufferLock.unlock() }

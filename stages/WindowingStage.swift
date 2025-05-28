@@ -1,4 +1,3 @@
-// Pipeline/Stages/Transform/WindowingStage.swift
 import Foundation
 import Accelerate
 

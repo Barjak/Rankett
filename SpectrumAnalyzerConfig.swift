@@ -16,15 +16,15 @@ struct SpectrumAnalyzerConfig {
     let sampleRate: Double = 44100
     
     // Display Parameters
-    let outputBinCount: Int = 700  // Number of bins to display (only used when useFrequencyBinning is true)
+    let outputBinCount: Int = 512  // Number of bins to display (only used when useFrequencyBinning is true)
     let useLogFrequencyScale: Bool = true
     let useFrequencyBinning: Bool = true  // NEW: Control whether to bin the data
     let minFrequency: Double = 20.0  // Hz
     let maxFrequency: Double = 20000.0  // Hz
     
     // Processing Parameters
-    let overlapRatio: Double = 0.500  // 0.0 to 1.0 (0.75 = 75% overlap)
-    let smoothingFactor: Float = 0.000  // 0.0 to 1.0 (higher = more smoothing)
+    let overlapRatio: Double = 0.700  // 0.0 to 1.0 (0.75 = 75% overlap)
+    let smoothingFactor: Float = 0.80  // 0.0 to 1.0 (higher = more smoothing)
     
     // Performance Parameters
     let updateRateHz: Double = 60.0  // Display update rate

@@ -25,7 +25,7 @@ final class MemoryPool {
     let fftImag: Region
     let magnitude: Region
     let displayCurrent: Region
-    let displayPrevious: Region
+    let displayTarget: Region
     
     init(config: Config) {
         size = config.totalMemorySize
@@ -53,7 +53,7 @@ final class MemoryPool {
         displayCurrent = Region(offset: offset, count: config.outputBinCount)
         offset += config.outputBinCount
         
-        displayPrevious = Region(offset: offset, count: config.outputBinCount)
+        displayTarget = Region(offset: offset, count: config.outputBinCount)
         
         assert(offset + config.outputBinCount == size, "Memory calculation mismatch")
     }
@@ -64,6 +64,6 @@ final class MemoryPool {
     
     // Helper to swap display buffers
     func swapDisplayBuffers() -> (current: Region, previous: Region) {
-        return (displayPrevious, displayCurrent)
+        return (displayTarget, displayCurrent)
     }
 }

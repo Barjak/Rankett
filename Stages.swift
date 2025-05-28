@@ -118,7 +118,7 @@ struct FrequencyBinningStage: Stage {
     
     func process(pool: MemoryPool, config: Config) {
         let srcPtr = pool.magnitude.pointer(in: pool)
-        let dstPtr = pool.displayCurrent.pointer(in: pool)
+        let dstPtr = pool.displayTarget.pointer(in: pool)
         
         if linearBinning {
             // Just copy the first N bins
@@ -141,26 +141,17 @@ struct FrequencyBinningStage: Stage {
     }
 }
 
-// MARK: - Smoothing Stage
-struct SmoothingStage: Stage {
-    func process(pool: MemoryPool, config: Config) {
-        let currentPtr = pool.displayCurrent.pointer(in: pool)
-        let previousPtr = pool.displayPrevious.pointer(in: pool)
-        let count = vDSP_Length(config.outputBinCount)
-        
-        // out = α * previous + (1-α) * current
-        var alpha = config.smoothingFactor
-        var oneMinusAlpha = 1.0 - config.smoothingFactor
-        
-        // Weighted sum: result = alpha * previous + oneMinusAlpha * current
-        var tempBuffer = [Float](repeating: 0, count: Int(count)) // TODO: make this not dynamically allocated or get rid of it entirely if we can do it in a provably correct fashion
-        vDSP_vsmul(previousPtr, 1, &alpha, &tempBuffer, 1, count)
-        vDSP_vsma(currentPtr, 1, &oneMinusAlpha, tempBuffer, 1, currentPtr, 1, count)
-        
-        // Copy result back to previous for next frame
-        memcpy(previousPtr, currentPtr, Int(count) * MemoryLayout<Float>.size)
+enum Smoothing {
+    static func apply(current: UnsafeMutablePointer<Float>,
+                      target: UnsafePointer<Float>,
+                      count: Int,
+                      smoothingFactor alpha: Float) {
+        for i in 0..<count {
+            current[i] = (current[i] * (alpha)) + (target[i] * (1-alpha))
+        }
     }
 }
+
 
 // MARK: - Pipeline Builder
 struct ProcessingPipeline {
@@ -172,7 +163,7 @@ struct ProcessingPipeline {
             FFTStage(size: config.fftSize),
             MagnitudeStage(convertToDb: true),
             FrequencyBinningStage(config: config),
-            SmoothingStage()
+            //SmoothingStage()
         ]
         return ProcessingPipeline(stages: stages)
     }

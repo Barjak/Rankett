@@ -11,7 +11,7 @@ struct Config {
     let useLogFrequencyScale: Bool = true
     let minFrequency: Double = 20.0
     let maxFrequency: Double = 20000.0
-    let smoothingFactor: Float = 0.85
+    let smoothingFactor: Float = 0.95
     
     // Performance parameters
     let frameRate: Double = 60.0

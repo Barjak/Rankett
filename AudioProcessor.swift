@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import QuartzCore
 
 final class AudioProcessor: ObservableObject {
@@ -13,6 +14,13 @@ final class AudioProcessor: ObservableObject {
     
     private var lastProcessTime: TimeInterval = 0
     private let processLock = NSLock()
+    
+    
+    private var smoothingTimer: Timer?
+
+    private var displayLock = NSLock()
+    private var currentDisplay: [Float] = []
+    private var previousDisplay: [Float] = []
     
     @Published var spectrumData: [Float] = []
     
@@ -53,7 +61,10 @@ final class AudioProcessor: ObservableObject {
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }
-        
+        smoothingTimer = Timer.scheduledTimer(withTimeInterval: config.frameInterval, repeats: true) { [weak self] _ in
+            self?.updateDisplay()
+        }
+
         // Start engine and playback
         do {
             try engine.start()
@@ -69,8 +80,28 @@ final class AudioProcessor: ObservableObject {
             print("Engine start error: \(error)")
         }
     }
-    
+    @objc private func updateDisplay() {
+        let currentPtr = pool.displayCurrent.pointer(in: pool)
+        let targetPtr = pool.displayTarget.pointer(in: pool)
+
+        Smoothing.apply(
+            current: currentPtr,
+            target: targetPtr,
+            count: config.outputBinCount,
+            smoothingFactor: config.smoothingFactor
+        )
+
+        DispatchQueue.main.async {
+            self.spectrumData = Array(
+                UnsafeBufferPointer(start: currentPtr, count: self.config.outputBinCount)
+            )
+        }
+    }
+
+
     func stop() {
+        smoothingTimer?.invalidate()
+        smoothingTimer = nil
         playerNode.stop()
         engine.mainMixerNode.removeTap(onBus: 0)
         engine.stop()

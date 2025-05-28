@@ -74,9 +74,14 @@ struct MagnitudeStage: Stage {
         vDSP_zvmags(&splitComplex, 1, magPtr, 1, vDSP_Length(count))
         
         if convertToDb {
-            // Convert to dB in-place
-            var minMag: Float = 1e-10
-            vDSP_vdbcon(magPtr, 1, &minMag, magPtr, 1, vDSP_Length(count), 1)
+            // First clamp to avoid log(0)
+            var floor: Float = 1e-10
+            var ceiling: Float = Float.greatestFiniteMagnitude
+            vDSP_vclip(magPtr, 1, &floor, &ceiling, magPtr, 1, vDSP_Length(count))
+            
+            // Convert to dB with reference = 1.0
+            var reference: Float = 1.0
+            vDSP_vdbcon(magPtr, 1, &reference, magPtr, 1, vDSP_Length(count), 1)
         }
     }
 }

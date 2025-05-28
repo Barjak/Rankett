@@ -37,6 +37,8 @@ struct Config {
         fftSize / 2 +          // FFT real part
         fftSize / 2 +          // FFT imaginary part
         fftSize / 2 +          // Magnitude output
-        outputBinCount * 2     // Display buffer (current + previous for smoothing)
+        outputBinCount * 2 +    // Display buffer (current + previous for smoothing)
+        fftSize / 2 +
+        fftSize / 2
     }
 }

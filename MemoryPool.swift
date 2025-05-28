@@ -26,6 +26,8 @@ final class MemoryPool {
     let magnitude: Region
     let displayCurrent: Region
     let displayTarget: Region
+    let fftStatsMean: Region
+    let fftStatsVar: Region
     
     init(config: Config) {
         size = config.totalMemorySize
@@ -54,8 +56,15 @@ final class MemoryPool {
         offset += config.outputBinCount
         
         displayTarget = Region(offset: offset, count: config.outputBinCount)
+        offset += config.outputBinCount
         
-        assert(offset + config.outputBinCount == size, "Memory calculation mismatch")
+        fftStatsMean = Region(offset: offset, count: config.fftSize / 2)
+        offset += config.fftSize / 2
+
+        fftStatsVar = Region(offset: offset, count: config.fftSize / 2)
+        offset += config.fftSize / 2
+        
+        assert(offset == size, "Memory calculation mismatch")
     }
     
     deinit {

@@ -1,58 +1,33 @@
 import Foundation
 import AVFoundation
-import Accelerate
-import Combine
-class AudioProcessor: ObservableObject {
-    public let config: SpectrumAnalyzerConfig
+import QuartzCore
 
+final class AudioProcessor: ObservableObject {
+    private let config: Config
+    private let pool: MemoryPool
+    private var circularBuffer: CircularBuffer
+    private let pipeline: ProcessingPipeline
+    
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
-
-    private let bufferStage: CircularBufferStage
-    private let windowingStage: WindowingStage
-    private let fftStage: FFTStage
-    private let magnitudeStage: MagnitudeStage
-
-    private let renderBinningStage: FrequencyBinningStage
-    private let smoothingStage: ExponentialSmoothingStage
-    private let varianceStage: VarianceTrackingStage
-
-    private let processingQueue = DispatchQueue(label: "audio.processing")
-    private let lock = NSLock()
-
+    
+    private var lastProcessTime: TimeInterval = 0
+    private let processLock = NSLock()
+    
     @Published var spectrumData: [Float] = []
-    @Published var frequencyData: [Float] = []
-
-    private var updateTimer: Timer?
-
-    init(config: SpectrumAnalyzerConfig) {
+    
+    init(config: Config = Config()) {
         self.config = config
-
-        self.bufferStage = CircularBufferStage(
-            fftSize: config.fftSize,
-            hopSize: config.hopSize,
-            maxWindows: 10  // Can still use this as max extraction size
-        )
-
-        self.windowingStage = WindowingStage(windowType: .blackmanHarris, size: config.fftSize)
-        self.fftStage = FFTStage(fftSize: config.fftSize, sampleRate: config.sampleRate)
-        self.magnitudeStage = MagnitudeStage()
-
-        self.renderBinningStage = FrequencyBinningStage(
-            outputBinCount: config.outputBinCount,
-            useLogScale: config.useLogFrequencyScale,
-            minFrequency: config.minFrequency,
-            maxFrequency: config.maxFrequency
-        )
-
-        self.smoothingStage = ExponentialSmoothingStage(smoothingFactor: config.smoothingFactor)
-        self.varianceStage = VarianceTrackingStage()
-
+        self.pool = MemoryPool(config: config)
+        self.circularBuffer = CircularBuffer(region: pool.circularBuffer)
+        self.pipeline = ProcessingPipeline.build(config: config)
+        
+        // Initialize published data
         self.spectrumData = Array(repeating: -80, count: config.outputBinCount)
-        self.frequencyData = (0..<config.outputBinCount).map { _ in 0 }
+        
         configureAudioSession()
     }
-
+    
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
@@ -61,75 +36,97 @@ class AudioProcessor: ObservableObject {
             print("Audio session error: \(error)")
         }
     }
-
+    
     func start() {
         guard let url = Bundle.main.url(forResource: "Test", withExtension: "mp3"),
-              let audioFile = try? AVAudioFile(forReading: url)
-        else {
-            print("Failed to load audio")
+              let audioFile = try? AVAudioFile(forReading: url) else {
+            print("Failed to load Test.mp3")
             return
         }
-
+        
         engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: audioFile.processingFormat)
-
-        let tapSize = AVAudioFrameCount(1024)  // Independent of hopSize
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapSize, format: audioFile.processingFormat) { buffer, _ in
-            self.handleAudioBuffer(buffer)
+        let format = audioFile.processingFormat
+        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+        
+        // Install tap
+        let tapBufferSize = AVAudioFrameCount(1024)
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
+            self?.handleAudioBuffer(buffer)
         }
-
-        // Start timer-driven processing
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / config.updateRateHz, repeats: true) { _ in
-            self.processingQueue.async {
-                self.processBufferedAudio()
-            }
-        }
-
+        
+        // Start engine and playback
         do {
             try engine.start()
-            playerNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
+            playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                // Loop playback
+                DispatchQueue.main.async {
+                    self?.playerNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
+                    self?.playerNode.play()
+                }
+            }
             playerNode.play()
         } catch {
-            print("Engine failed to start: \(error)")
+            print("Engine start error: \(error)")
         }
     }
-
+    
     func stop() {
-        updateTimer?.invalidate()
         playerNode.stop()
-        engine.stop()
         engine.mainMixerNode.removeTap(onBus: 0)
+        engine.stop()
     }
-
-    // MARK: - Audio Input Handler
-
+    
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData?[0] else { return }
         let frameLength = Int(buffer.frameLength)
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
-
-        bufferStage.write(samples)
+        
+        // Write to circular buffer
+        circularBuffer.write(channelData, count: frameLength, to: pool)
+        
+        // Check if we should process (throttle to target framerate)
+        let now = CACurrentMediaTime()
+        if now - lastProcessTime >= config.frameInterval {
+            processAudio()
+            lastProcessTime = now
+        }
     }
-
-    // MARK: - Time-Driven Processing
-
-    private func processBufferedAudio() {
-        let windows = bufferStage.extractWindows(maxWindows: 4)
-        guard !windows.isEmpty else { return }
-
-        let windowed = windowingStage.process(windows)
-        let spectrum = fftStage.process(windowed)
-        let magnitudes = magnitudeStage.process(spectrum)
-
-        let bins = renderBinningStage.process(magnitudes)
-        let smoothed = smoothingStage.process(bins)
-        //let _ = varianceStage.process(smoothed)  // Analysis side effect only
-
-        let latest = smoothed.first
-
-        DispatchQueue.main.async {
-            self.spectrumData = latest?.magnitudes ?? []
-            self.frequencyData = latest?.frequencies ?? []
+    
+    private func processAudio() {
+        processLock.lock()
+        defer { processLock.unlock() }
+        
+        // Process all available windows (up to current write position)
+        var windowsProcessed = 0
+        let maxWindows = 4  // Process up to 4 windows per frame
+        
+        while windowsProcessed < maxWindows &&
+              circularBuffer.canExtractWindow(of: config.fftSize, at: windowsProcessed * config.hopSize) {
+            
+            // Extract window to workspace
+            guard circularBuffer.extractWindow(
+                of: config.fftSize,
+                at: windowsProcessed * config.hopSize,
+                to: pool.windowWorkspace,
+                in: pool
+            ) else {
+                break
+            }
+            
+            // Run pipeline
+            pipeline.process(pool: pool, config: config)
+            windowsProcessed += 1
+        }
+        
+        // Advance buffer by processed amount
+        if windowsProcessed > 0 {
+            circularBuffer.advance(by: windowsProcessed * config.hopSize)
+            
+            // Update published data from display buffer
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let displayPtr = self.pool.displayCurrent.pointer(in: self.pool)
+                self.spectrumData = Array(UnsafeBufferPointer(start: displayPtr, count: self.config.outputBinCount))
+            }
         }
     }
 }

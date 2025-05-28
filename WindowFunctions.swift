@@ -1,40 +1,40 @@
-
-// MARK: - Window Functions
-import SwiftUI
-import AVFoundation
-import Accelerate
 import Foundation
+import Accelerate
 
 enum WindowType {
-    case blackmanHarris
+    case none
     case hann
     case hamming
+    case blackmanHarris
     
     func createWindow(size: Int) -> [Float] {
         switch self {
+        case .none:
+            return Array(repeating: 1.0, count: size)
+        case .hann:
+            return vDSP.window(ofType: Float.self,
+                             usingSequence: .hanningDenormalized,
+                             count: size,
+                             isHalfWindow: false)
+        case .hamming:
+            return vDSP.window(ofType: Float.self,
+                             usingSequence: .hamming,
+                             count: size,
+                             isHalfWindow: false)
         case .blackmanHarris:
             return createBlackmanHarrisWindow(size: size)
-        case .hann:
-            return vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: size, isHalfWindow: false)
-        case .hamming:
-            return vDSP.window(ofType: Float.self, usingSequence: .hamming, count: size, isHalfWindow: false)
         }
     }
 }
 
-func createBlackmanHarrisWindow(size: Int) -> [Float] {
-    let coefficients: [Float] = [0.35875, 0.48829, 0.14128, 0.01168]
-    var window = [Float](repeating: 0, count: size)
+private func createBlackmanHarrisWindow(size: Int) -> [Float] {
+    let a0: Float = 0.35875
+    let a1: Float = 0.48829
+    let a2: Float = 0.14128
+    let a3: Float = 0.01168
     
-    for i in 0..<size {
-        let x = 2.0 * Float.pi * Float(i) / Float(size - 1)
-        window[i] = coefficients[0]
-                  - coefficients[1] * cos(x)
-                  + coefficients[2] * cos(2 * x)
-                  - coefficients[3] * cos(3 * x)
+    return (0..<size).map { i in
+        let phase = 2.0 * Float.pi * Float(i) / Float(size - 1)
+        return a0 - a1 * cos(phase) + a2 * cos(2 * phase) - a3 * cos(3 * phase)
     }
-    
-    return window
 }
-
-

@@ -1,15 +1,10 @@
-//
-//  WindowFunctions.swift
-//  ShitPipes
-//
-//  Created by Ralph Richards on 5/27/25.
-//
 
 // MARK: - Window Functions
 import SwiftUI
 import AVFoundation
 import Accelerate
 import Foundation
+
 enum WindowType {
     case blackmanHarris
     case hann

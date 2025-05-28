@@ -1,9 +1,5 @@
-//
-//  AudioProcessor.swift
-//  ShitPipes
-//
-//  Created by Ralph Richards on 5/27/25.
-//
+// TODO: some of this logic has been moved to the ./stages/ directory
+// TODO: we need to write a pipeline builder
 import SwiftUI
 import AVFoundation
 import Accelerate

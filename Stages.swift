@@ -148,8 +148,9 @@ struct SmoothingStage: Stage {
         var oneMinusAlpha = 1.0 - config.smoothingFactor
         
         // Weighted sum: result = alpha * previous + oneMinusAlpha * current
-        vDSP_vsmul(previousPtr, 1, &alpha, previousPtr, 1, count)
-        vDSP_vsma(currentPtr, 1, &oneMinusAlpha, previousPtr, 1, currentPtr, 1, count)
+        var tempBuffer = [Float](repeating: 0, count: Int(count)) // TODO: make this not dynamically allocated or get rid of it entirely if we can do it in a provably correct fashion
+        vDSP_vsmul(previousPtr, 1, &alpha, &tempBuffer, 1, count)
+        vDSP_vsma(currentPtr, 1, &oneMinusAlpha, tempBuffer, 1, currentPtr, 1, count)
         
         // Copy result back to previous for next frame
         memcpy(previousPtr, currentPtr, Int(count) * MemoryLayout<Float>.size)

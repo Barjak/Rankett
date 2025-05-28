@@ -59,8 +59,8 @@ final class SpectrumGraphView: UIView {
         
         // Create path
         let path = CGMutablePath()
-        let minDB: Float = -160
-        let maxDB: Float = 300
+        let minDB: Float = -80
+        let maxDB: Float = 0
         let dbRange = maxDB - minDB
         
         for (i, magnitude) in spectrumData.enumerated() {

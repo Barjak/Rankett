@@ -208,6 +208,80 @@ final class StatsSuppressor {
     }
 }
 
+// MARK: - HPS Processor
+// MARK: - HPS Processor
+final class HPSProcessor {
+    private let maxHarmonics: Int
+    private let workspace: UnsafeMutablePointer<Float>
+    
+    init(spectrumSize: Int, maxHarmonics: Int = 5) {
+        self.maxHarmonics = maxHarmonics
+        self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
+    }
+    
+    deinit {
+        workspace.deallocate()
+    }
+    
+    func findFundamental(magnitudes: UnsafePointer<Float>,
+                        count: Int,
+                        sampleRate: Float) -> Float {
+        // Copy input to workspace
+        memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
+        
+        // Multiply downsampled harmonics
+        for h in 2...maxHarmonics {
+            for i in 0..<(count / h) {
+                workspace[i] *= magnitudes[i * h]
+            }
+        }
+        
+        // Find peak
+        var maxValue: Float = 0
+        var maxIndex: vDSP_Length = 0
+        vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(count / maxHarmonics))
+        
+        return Float(maxIndex) * sampleRate / Float(count * 2)
+    }
+}
+
+final class WeightedHPSProcessor {
+    private let harmonicWeights: [Float]
+    private let workspace: UnsafeMutablePointer<Float>
+    
+    init(spectrumSize: Int, timbre: TimbreType) {
+        self.harmonicWeights = timbre.harmonicProfile
+        self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
+    }
+    
+    func findFundamental(magnitudes: UnsafePointer<Float>, count: Int, sampleRate: Float) -> Float {
+        memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
+        
+        for (h, weight) in harmonicWeights.enumerated().dropFirst() {
+            let harmonic = h + 1
+            for i in 0..<(count / harmonic) {
+                workspace[i] *= pow(magnitudes[i * harmonic], weight)
+            }
+        }
+        
+        var maxValue: Float = 0
+        var maxIndex: vDSP_Length = 0
+        vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(count / harmonicWeights.count))
+        return Float(maxIndex) * sampleRate / Float(count * 2)
+    }
+}
+
+enum TimbreType {
+    case principal
+    
+    var harmonicProfile: [Float] {
+        switch self {
+        case .principal: return [1.0, 0.8, 0.6, 0.4, 0.2]
+
+        }
+    }
+}
+
 // MARK: - Spectrum Analyzer (replaces pipeline)
 final class SpectrumAnalyzer {
     private let config: Config
@@ -239,33 +313,32 @@ final class SpectrumAnalyzer {
             self.statsSuppressor = nil
         }
     }
+    // In SpectrumAnalyzer
     func dispatchStudy(pool: MemoryPool, completion: @escaping (StudyResult) -> Void) {
-        // Get current magnitude data
-        let magnitudePtr = pool.magnitude.pointer(in: pool)
-        let magnitudeCount = config.fftSize / 2
+        // Get FFT complex output
+        let realPtr = pool.fftReal.pointer(in: pool)
+        let imagPtr = pool.fftImag.pointer(in: pool)
+        let fftCount = config.fftSize / 2
         
-        // Copy magnitudes to array for study
-        let magnitudes = Array(UnsafeBufferPointer(start: magnitudePtr, count: magnitudeCount))
+        // Get unwindowed time-domain data from circular buffer
+        let timePtr = pool.windowWorkspace.pointer(in: pool)
         
-        // If using log scale, get the mapped bins
-        let studyMagnitudes: [Float]
-        if config.useLogFrequencyScale {
-            var mapped = [Float](repeating: -80, count: config.outputBinCount)
-            frequencyMapper.mapBins(
-                input: magnitudePtr,
-                output: &mapped,
-                inputCount: magnitudeCount,
-                outputCount: config.outputBinCount
-            )
-            studyMagnitudes = mapped
-        } else {
-            // Use first outputBinCount bins
-            studyMagnitudes = Array(magnitudes.prefix(config.outputBinCount))
-        }
+        // Copy to arrays
+        let fftReal = Array(UnsafeBufferPointer(start: realPtr, count: fftCount))
+        let fftImag = Array(UnsafeBufferPointer(start: imagPtr, count: fftCount))
+        let timeDomain = Array(UnsafeBufferPointer(start: timePtr, count: config.fftSize))
         
-        // Dispatch study
-        study.performStudy(magnitudes: studyMagnitudes, completion: completion)
+        // Dispatch study with raw data
+        study.performStudy(
+            fftReal: fftReal,
+            fftImag: fftImag,
+            timeDomain: timeDomain,
+            sampleRate: Float(config.sampleRate),
+            completion: completion
+        )
     }
+    
+    
     func analyze(pool: MemoryPool) {
         let currentTime = CACurrentMediaTime()
         let deltaTime = currentTime - lastProcessTime

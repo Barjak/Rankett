@@ -2,13 +2,32 @@ import Foundation
 import Accelerate
 import CoreML
 
-// MARK: - Study Result
+// Add to Study.swift
+
+struct PeakDetectionConfig {
+    var minProminence: Float = 6.0      // dB above surrounding
+    var minDistance: Int = 5            // bins between peaks
+    var minHeight: Float = -60.0        // absolute dB threshold
+    var prominenceWindow: Int = 50      // bins to search for bases
+}
+
+// Update StudyResult to include peaks
 struct StudyResult {
     let originalSpectrum: [Float]
     let noiseFloor: [Float]
     let denoisedSpectrum: [Float]
     let frequencies: [Float]
+    let peaks: [Peak]  // Add this
     let timestamp: Date
+}
+
+struct Peak {
+    let index: Int
+    let frequency: Float
+    let magnitude: Float
+    let prominence: Float
+    let leftBase: Int
+    let rightBase: Int
 }
 
 // MARK: - Study Object
@@ -59,12 +78,24 @@ final class Study {
     private let method: NoiseFloorMethod = .quantileRegression  // Change this to try different methods
     
     
-    // Update performStudy to apply threshold offset
-    func performStudy(magnitudes: [Float], completion: @escaping (StudyResult) -> Void) {
+    private let peakConfig = PeakDetectionConfig()
+
+    // Update performStudy to include peak detection
+    func performStudy(fftReal: [Float],
+                      fftImag: [Float],
+                      timeDomain: [Float],
+                      sampleRate: Float,
+                      completion: @escaping (StudyResult) -> Void) {
         queue.async { [weak self] in
             guard let self = self else { return }
             
+            // Compute magnitudes
+            let magnitudes = zip(fftReal, fftImag).map { sqrt($0*$0 + $1*$1) }
+            let magnitudesDB = magnitudes.map { 20 * log10(max($0, 1e-10)) }
+            
+            // Generate frequencies
             let frequencies = self.generateFrequencyArray(count: magnitudes.count)
+            
             
             // Fit noise floor using selected method
             var noiseFloor: [Float]
@@ -83,12 +114,15 @@ final class Study {
             noiseFloor = noiseFloor.map { $0 + self.noiseConfig.thresholdOffset }
             
             let denoised = self.denoiseSpectrum(magnitudes: magnitudes, noiseFloor: noiseFloor)
+            // Find peaks in the denoised spectrum
+            let peaks = self.findPeaks(in: magnitudes, frequencies: frequencies)
             
             let result = StudyResult(
-                originalSpectrum: magnitudes,
+                originalSpectrum: magnitudesDB,
                 noiseFloor: noiseFloor,
                 denoisedSpectrum: denoised,
                 frequencies: frequencies,
+                peaks: peaks,
                 timestamp: Date()
             )
             
@@ -109,7 +143,83 @@ final class Study {
         
         return adjusted.enumerated().map { min($0.element, magnitudes[$0.offset]) } // clamp to original
     }
-    
+    private func calculateProminence(at peakIndex: Int, in spectrum: [Float], window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
+        let peakHeight = spectrum[peakIndex]
+        let start = max(0, peakIndex - window)
+        let end = min(spectrum.count - 1, peakIndex + window)
+        
+        // Find lowest points on each side
+        var leftMin = peakHeight
+        var leftMinIndex = peakIndex
+        for i in stride(from: peakIndex - 1, through: start, by: -1) {
+            if spectrum[i] < leftMin {
+                leftMin = spectrum[i]
+                leftMinIndex = i
+            }
+            if spectrum[i] > peakHeight { break }  // Higher peak found
+        }
+        
+        var rightMin = peakHeight
+        var rightMinIndex = peakIndex
+        for i in stride(from: peakIndex + 1, through: end, by: 1) {
+            if spectrum[i] < rightMin {
+                rightMin = spectrum[i]
+                rightMinIndex = i
+            }
+            if spectrum[i] > peakHeight { break }  // Higher peak found
+        }
+        
+        let prominence = peakHeight - max(leftMin, rightMin)
+        return (prominence, leftMinIndex, rightMinIndex)
+    }
+
+    private func filterByDistance(_ peaks: [Peak], minDistance: Int) -> [Peak] {
+        guard !peaks.isEmpty else { return [] }
+        
+        // Sort by magnitude (keep highest peaks when too close)
+        let sorted = peaks.sorted { $0.magnitude > $1.magnitude }
+        var kept: [Peak] = []
+        
+        for peak in sorted {
+            let tooClose = kept.contains { abs($0.index - peak.index) < minDistance }
+            if !tooClose {
+                kept.append(peak)
+            }
+        }
+        
+        return kept.sorted { $0.index < $1.index }
+    }
+    private func findPeaks(in spectrum: [Float], frequencies: [Float]) -> [Peak] {
+        var peaks: [Peak] = []
+        
+        // Find local maxima
+        for i in 1..<(spectrum.count - 1) {
+            if spectrum[i] > spectrum[i-1] && spectrum[i] > spectrum[i+1] && spectrum[i] > peakConfig.minHeight {
+                // Calculate prominence
+                let (prominence, leftBase, rightBase) = calculateProminence(
+                    at: i,
+                    in: spectrum,
+                    window: peakConfig.prominenceWindow
+                )
+                
+                if prominence >= peakConfig.minProminence {
+                    peaks.append(Peak(
+                        index: i,
+                        frequency: frequencies[i],
+                        magnitude: spectrum[i],
+                        prominence: prominence,
+                        leftBase: leftBase,
+                        rightBase: rightBase
+                    ))
+                }
+            }
+        }
+        
+        // Filter by minimum distance
+        peaks = filterByDistance(peaks, minDistance: peakConfig.minDistance)
+        
+        return peaks
+    }
     // MARK: - Method 1: Quantile Regression (original)
     private func fitNoiseFloorQuantile(magnitudes: [Float]) -> [Float] {
         let count = magnitudes.count
@@ -334,6 +444,8 @@ final class Study {
         
         return result
     }
+    
+    
 
     // MARK: - Denoising
     private func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {

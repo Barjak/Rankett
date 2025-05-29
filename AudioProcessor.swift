@@ -7,7 +7,7 @@ final class AudioProcessor: ObservableObject {
     private let config: Config
     private let pool: MemoryPool
     private var circularBuffer: CircularBuffer
-    private var pipeline: ProcessingPipeline
+    private let analyzer: SpectrumAnalyzer
     
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -15,12 +15,7 @@ final class AudioProcessor: ObservableObject {
     private var lastProcessTime: TimeInterval = 0
     private let processLock = NSLock()
     
-    
     private var smoothingTimer: Timer?
-
-    private var displayLock = NSLock()
-    private var currentDisplay: [Float] = []
-    private var previousDisplay: [Float] = []
     
     @Published var spectrumData: [Float] = []
     
@@ -28,7 +23,7 @@ final class AudioProcessor: ObservableObject {
         self.config = config
         self.pool = MemoryPool(config: config)
         self.circularBuffer = CircularBuffer(region: pool.circularBuffer)
-        self.pipeline = ProcessingPipeline.build(config: config)
+        self.analyzer = SpectrumAnalyzer(config: config)
         
         // Initialize published data
         self.spectrumData = Array(repeating: -80, count: config.outputBinCount)
@@ -61,6 +56,7 @@ final class AudioProcessor: ObservableObject {
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }
+        
         smoothingTimer = Timer.scheduledTimer(withTimeInterval: config.frameInterval, repeats: true) { [weak self] _ in
             self?.updateDisplay()
         }
@@ -80,25 +76,7 @@ final class AudioProcessor: ObservableObject {
             print("Engine start error: \(error)")
         }
     }
-    @objc private func updateDisplay() {
-        let currentPtr = pool.displayCurrent.pointer(in: pool)
-        let targetPtr = pool.displayTarget.pointer(in: pool)
-
-        Smoothing.apply(
-            current: currentPtr,
-            target: targetPtr,
-            count: config.outputBinCount,
-            smoothingFactor: config.smoothingFactor
-        )
-
-        DispatchQueue.main.async {
-            self.spectrumData = Array(
-                UnsafeBufferPointer(start: currentPtr, count: self.config.outputBinCount)
-            )
-        }
-    }
-
-
+    
     func stop() {
         smoothingTimer?.invalidate()
         smoothingTimer = nil
@@ -114,7 +92,7 @@ final class AudioProcessor: ObservableObject {
         // Write to circular buffer
         circularBuffer.write(channelData, count: frameLength, to: pool)
         
-        // Check if we should process (throttle to target framerate)
+        // Process if we have enough data and enough time has passed
         let now = CACurrentMediaTime()
         if now - lastProcessTime >= config.frameInterval {
             processAudio()
@@ -126,38 +104,43 @@ final class AudioProcessor: ObservableObject {
         processLock.lock()
         defer { processLock.unlock() }
         
-        // Process all available windows (up to current write position)
-        var windowsProcessed = 0
-        let maxWindows = 4  // Process up to 4 windows per frame
-        
-        while windowsProcessed < maxWindows &&
-              circularBuffer.canExtractWindow(of: config.fftSize, at: windowsProcessed * config.hopSize) {
-            
+        // Process only one window per frame
+        if circularBuffer.canExtractWindow(of: config.fftSize, at: 0) {
             // Extract window to workspace
             guard circularBuffer.extractWindow(
                 of: config.fftSize,
-                at: windowsProcessed * config.hopSize,
+                at: 0,
                 to: pool.windowWorkspace,
                 in: pool
             ) else {
-                break
+                return
             }
             
-            // Run pipeline
-            pipeline.process(pool: pool, config: config)
-            windowsProcessed += 1
+            // Run analysis
+            analyzer.analyze(pool: pool)
+            
+            // Advance by hop size (smaller hop for better time resolution)
+            circularBuffer.advance(by: config.hopSize)
         }
+    }
+    
+    @objc private func updateDisplay() {
+        let currentPtr = pool.displayCurrent.pointer(in: pool)
+        let targetPtr = pool.displayTarget.pointer(in: pool)
         
-        // Advance buffer by processed amount
-        if windowsProcessed > 0 {
-            circularBuffer.advance(by: windowsProcessed * config.hopSize)
-            
-            // Update published data from display buffer
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                let displayPtr = self.pool.displayCurrent.pointer(in: self.pool)
-                self.spectrumData = Array(UnsafeBufferPointer(start: displayPtr, count: self.config.outputBinCount))
-            }
+        // Apply smoothing
+        Smoothing.apply(
+            current: currentPtr,
+            target: targetPtr,
+            count: config.outputBinCount,
+            smoothingFactor: config.smoothingFactor
+        )
+        
+        // Update published data
+        DispatchQueue.main.async {
+            self.spectrumData = Array(
+                UnsafeBufferPointer(start: currentPtr, count: self.config.outputBinCount)
+            )
         }
     }
 }

@@ -1,36 +1,40 @@
 import Foundation
-
 struct Config {
-    // Audio parameters
     let sampleRate: Double = 44100
-    let fftSize: Int = 8192 * 2
-    let hopSize: Int = 1024  // For 75% overlap
-    
-    // Display parameters
+    let fftSize: Int = 8192 * 1 // Keep large for accuracy
     let outputBinCount: Int = 512
+    
+    // Reduced hop size for better time resolution
+    // At 60 FPS, we want to advance ~735 samples per frame
+    // But round to a nice number for efficiency
+    var hopSize: Int {
+        return 512  // ~86 windows per second, plenty for 60 FPS
+    }
+    
+    let frameInterval: TimeInterval = 1.0 / 60.0  // 60 FPS target
+    let smoothingFactor: Float = 0.1
     let useLogFrequencyScale: Bool = true
     let minFrequency: Double = 20.0
     let maxFrequency: Double = 20000.0
-    let smoothingFactor: Float = 0.2
+    let enableStatsSuppression: Bool = false
     
-    // Performance parameters
-    let frameRate: Double = 60.0
-    let circularBufferSize: Int = 32768  // 4x fftSize for safety
+    let frameRate: Double = 60
     
     // Computed properties
-    var frameInterval: TimeInterval {
-        1.0 / frameRate
+    var nyquistFrequency: Double {
+        return sampleRate / 2.0
     }
     
     var frequencyResolution: Double {
-        sampleRate / Double(fftSize)
+        return sampleRate / Double(fftSize)
     }
     
-    var nyquistFrequency: Double {
-        sampleRate / 2.0
+    var circularBufferSize: Int {
+        // Need at least fftSize + maxExpectedAudioBuffer
+        // Add extra for timing margin
+        return fftSize * 3
     }
     
-    // Memory layout calculations
     var totalMemorySize: Int {
         circularBufferSize +    // Circular buffer
         fftSize +              // Window workspace

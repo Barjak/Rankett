@@ -49,16 +49,16 @@ final class FFTProcessor {
 
 // MARK: - Magnitude Processor
 final class MagnitudeProcessor {
-    private let convertToDb: Bool
     
-    init(convertToDb: Bool = true) {
-        self.convertToDb = convertToDb
+    init() {
+        
     }
     
     func computeMagnitudes(real: UnsafePointer<Float>,
                           imag: UnsafePointer<Float>,
                           output: UnsafeMutablePointer<Float>,
-                          count: Int) {
+                          count: Int,
+                           convertToDb: Bool) {
         var splitComplex = DSPSplitComplex(
             realp: UnsafeMutablePointer(mutating: real),
             imagp: UnsafeMutablePointer(mutating: imag)
@@ -303,7 +303,7 @@ final class SpectrumAnalyzer {
         self.study = Study(config: config)
         self.windowProcessor = WindowProcessor(type: .blackmanHarris, size: config.fftSize)
         self.fftProcessor = FFTProcessor(size: config.fftSize)
-        self.magnitudeProcessor = MagnitudeProcessor(convertToDb: true)
+        self.magnitudeProcessor = MagnitudeProcessor()
         self.frequencyMapper = FrequencyMapper(config: config)
         
         // Optional stats suppressor
@@ -382,7 +382,8 @@ final class SpectrumAnalyzer {
             real: fftReal,
             imag: fftImag,
             output: magnitude,
-            count: config.fftSize / 2
+            count: config.fftSize / 2,
+            convertToDb: true
         )
         
         // Step 4: Optional stats-based suppression

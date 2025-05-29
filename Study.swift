@@ -33,7 +33,7 @@ struct Peak {
 // MARK: - Study Object
 struct NoiseFloorConfig {
     var method: Study.NoiseFloorMethod = .whittaker
-    var thresholdOffset: Float = 10.0  // dB above fitted floor
+    var thresholdOffset: Float = 0.0  // dB above fitted floor
 
     // Quantile Regression
     var quantile: Float = 0.1
@@ -91,7 +91,6 @@ final class Study {
             
             // Compute magnitudes
             let magnitudes = zip(fftReal, fftImag).map { sqrt($0*$0 + $1*$1) }
-            let magnitudesDB = magnitudes.map { 20 * log10(max($0, 1e-10)) }
             
             // Generate frequencies
             let frequencies = self.generateFrequencyArray(count: magnitudes.count)
@@ -118,7 +117,7 @@ final class Study {
             let peaks = self.findPeaks(in: magnitudes, frequencies: frequencies)
             
             let result = StudyResult(
-                originalSpectrum: magnitudesDB,
+                originalSpectrum: magnitudes,
                 noiseFloor: noiseFloor,
                 denoisedSpectrum: denoised,
                 frequencies: frequencies,
@@ -450,17 +449,14 @@ final class Study {
     // MARK: - Denoising
     private func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {
         let count = magnitudes.count
-        var denoised = [Float](repeating: -80, count: count) // Start with minimum dB
+        var denoised = [Float](repeating: -80, count: count)
         
         for i in 0..<count {
-            // Calculate the relative height above the noise floor
-            let relativeHeight = magnitudes[i] - noiseFloor[i]
-            
-            // Only keep positive differences (peaks above noise floor)
-            if relativeHeight > 0 {
-                denoised[i] = relativeHeight
+            // If signal is above noise floor, keep original value
+            // Otherwise, set to minimum
+            if magnitudes[i] > noiseFloor[i] {
+                denoised[i] = magnitudes[i]
             } else {
-                // Keep at -80 dB for values at or below the noise floor
                 denoised[i] = -80
             }
         }

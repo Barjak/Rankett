@@ -53,7 +53,7 @@ final class SpectrumGraphView: UIView {
         ctx.saveGState()
         ctx.translateBy(x: padding, y: padding)
         ctx.setStrokeColor(UIColor.systemBlue.cgColor)
-        ctx.setLineWidth(2)
+        ctx.setLineWidth(1)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         

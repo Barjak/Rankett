@@ -11,32 +11,64 @@ struct StudyResult {
 }
 
 // MARK: - Study Object
+struct NoiseFloorConfig {
+    var method: Study.NoiseFloorMethod = .quantileRegression
+    var thresholdOffset: Float = 10.0  // dB above fitted floor
+    var quantile: Float = 0.1  // For quantile regression
+    var huberDelta: Float = 1.0  // For Huber method
+    var huberAsymmetry: Float = 2.0  // For Huber method
+    var smoothingSigma: Float = 1.0  // Final smoothing
+}
+
+// Then update Study to use this config
 final class Study {
     private let config: Config
+    private let noiseConfig: NoiseFloorConfig
+    
+    init(config: Config, noiseConfig: NoiseFloorConfig = NoiseFloorConfig()) {
+        self.config = config
+        self.noiseConfig = noiseConfig
+    }
+    
     private let queue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
     
     // Quantile regression parameters
-    private let quantile: Float = 0.1  // 10th percentile for noise floor
-    private let smoothingLambda: Float = 0.2  // Total variation regularization
     private let maxIterations = 10
     private let convergenceThreshold: Float = 1e-4
     
-    init(config: Config) {
-        self.config = config
+    // Threshold adjustment - how many dB above the fitted noise floor
+    
+    // Method selection
+    enum NoiseFloorMethod {
+        case quantileRegression
+        case huberAsymmetric
+        case parametric1OverF
     }
     
+    private let method: NoiseFloorMethod = .quantileRegression  // Change this to try different methods
+    
+    
+    // Update performStudy to apply threshold offset
     func performStudy(magnitudes: [Float], completion: @escaping (StudyResult) -> Void) {
-        // Dispatch to background queue
         queue.async { [weak self] in
             guard let self = self else { return }
             
-            // Generate frequency array for the bins
             let frequencies = self.generateFrequencyArray(count: magnitudes.count)
             
-            // Fit noise floor using quantile regression
-            let noiseFloor = self.fitNoiseFloor(magnitudes: magnitudes)
+            // Fit noise floor using selected method
+            var noiseFloor: [Float]
+            switch self.method {
+            case .quantileRegression:
+                noiseFloor = self.fitNoiseFloorQuantile(magnitudes: magnitudes)
+            case .huberAsymmetric:
+                noiseFloor = self.fitNoiseFloorHuber(magnitudes: magnitudes)
+            case .parametric1OverF:
+                noiseFloor = self.fitNoiseFloorParametric(magnitudes: magnitudes, frequencies: frequencies)
+            }
             
-            // Denoise the spectrum
+            // Apply threshold offset - raise the floor by N dB
+            noiseFloor = noiseFloor.map { $0 + self.noiseConfig.thresholdOffset }
+            
             let denoised = self.denoiseSpectrum(magnitudes: magnitudes, noiseFloor: noiseFloor)
             
             let result = StudyResult(
@@ -47,43 +79,157 @@ final class Study {
                 timestamp: Date()
             )
             
-            // Return result on main thread
             DispatchQueue.main.async {
                 completion(result)
             }
         }
     }
     
-    // MARK: - Noise Floor Fitting
-    private func fitNoiseFloor(magnitudes: [Float]) -> [Float] {
+    // MARK: - Method 1: Quantile Regression (original)
+    private func fitNoiseFloorQuantile(magnitudes: [Float]) -> [Float] {
         let count = magnitudes.count
         var noiseFloor = [Float](repeating: 0, count: count)
         
-        // Initialize with moving minimum
         noiseFloor = movingMinimum(magnitudes, windowSize: 20)
         
-        // Apply quantile regression with total variation regularization
         for _ in 0..<maxIterations {
             let previousFloor = noiseFloor
             noiseFloor = quantileRegressionStep(
                 data: magnitudes,
                 current: noiseFloor,
-                quantile: quantile,
-                lambda: smoothingLambda
+                quantile: noiseConfig.quantile,
+                lambda: noiseConfig.smoothingSigma
             )
             
-            // Check convergence
             let change = zip(noiseFloor, previousFloor).map { abs($0 - $1) }.max() ?? 0
             if change < convergenceThreshold {
                 break
             }
         }
         
-        // Apply final smoothing
+        noiseFloor = gaussianSmooth(noiseFloor, sigma: 2.0)
+        return noiseFloor
+    }
+    
+    // MARK: - Method 2: Huber Loss with Asymmetric Weighting
+    private func fitNoiseFloorHuber(magnitudes: [Float]) -> [Float] {
+        let count = magnitudes.count
+        var noiseFloor = movingMinimum(magnitudes, windowSize: 20)
+        
+        let huberDelta: Float = 1.0  // Threshold for Huber loss
+        let alpha: Float = 2.0  // Asymmetry parameter
+        
+        for iteration in 0..<maxIterations {
+            var gradient = [Float](repeating: 0, count: count)
+            
+            // Compute Huber loss gradient with asymmetric weighting
+            for i in 0..<count {
+                let residual = magnitudes[i] - noiseFloor[i]
+                
+                // Asymmetric weight - penalize positive errors more
+                let weight = residual > 0 ? exp(-alpha * residual) : 1.0
+                
+                // Huber loss gradient
+                let grad: Float
+                if abs(residual) <= huberDelta {
+                    grad = residual * weight
+                } else {
+                    grad = huberDelta * sign(residual) * weight
+                }
+                
+                gradient[i] = grad
+            }
+            
+            // Apply gradient update with momentum
+            let learningRate: Float = 0.1 / Float(iteration + 1)
+            for i in 0..<count {
+                noiseFloor[i] += learningRate * gradient[i]
+            }
+            
+            // Apply smoothness constraint
+            noiseFloor = gaussianSmooth(noiseFloor, sigma: 1.0)
+            
+            // Ensure floor doesn't exceed data
+            for i in 0..<count {
+                noiseFloor[i] = min(noiseFloor[i], magnitudes[i])
+            }
+        }
+        
+        return noiseFloor
+    }
+    
+    // MARK: - Method 3: Parametric 1/f Model
+    private func fitNoiseFloorParametric(magnitudes: [Float], frequencies: [Float]) -> [Float] {
+        let count = magnitudes.count
+        
+        // Model: f(x) = a/x + b + c*log(x)
+        // Convert to linear form for least squares
+        
+        // Filter out DC and very low frequencies
+        let startIdx = 5  // Skip first few bins
+        let validIndices = Array(startIdx..<count)
+        
+        // Prepare matrices for least squares
+        var sumX = Float(0)      // 1/f term
+        var sumLogX = Float(0)   // log(f) term
+        var sumY = Float(0)      // magnitude
+        var sumXX = Float(0)
+        var sumLogXX = Float(0)
+        var sumXLogX = Float(0)
+        var sumXY = Float(0)
+        var sumLogXY = Float(0)
+        var n = Float(0)
+        
+        // Use lower percentile of magnitudes for fitting
+        var sortedMags = [(Float, Int)]()
+        for idx in validIndices {
+            sortedMags.append((magnitudes[idx], idx))
+        }
+        sortedMags.sort { $0.0 < $1.0 }
+        
+        // Use bottom 30% of points
+        let useCount = Int(Float(sortedMags.count) * 0.3)
+        
+        for i in 0..<useCount {
+            let idx = sortedMags[i].1
+            let freq = max(frequencies[idx], 1.0)  // Avoid log(0)
+            let x = 1.0 / freq
+            let logX = log10(freq)
+            let y = magnitudes[idx]
+            
+            sumX += x
+            sumLogX += logX
+            sumY += y
+            sumXX += x * x
+            sumLogXX += logX * logX
+            sumXLogX += x * logX
+            sumXY += x * y
+            sumLogXY += logX * y
+            n += 1
+        }
+        
+        // Solve 3x3 system for parameters a, b, c
+        // Simplified: just fit a/f + b for now
+        let denominator = n * sumXX - sumX * sumX
+        let a = (n * sumXY - sumX * sumY) / denominator
+        let b = (sumXX * sumY - sumX * sumXY) / denominator
+        
+        // Generate fitted curve
+        var noiseFloor = [Float](repeating: b, count: count)
+        for i in 0..<count {
+            let freq = max(frequencies[i], 1.0)
+            noiseFloor[i] = a / freq + b
+            
+            // Ensure floor doesn't exceed data
+            noiseFloor[i] = min(noiseFloor[i], magnitudes[i])
+        }
+        
+        // Smooth the result
         noiseFloor = gaussianSmooth(noiseFloor, sigma: 2.0)
         
         return noiseFloor
     }
+    
     
     // MARK: - Quantile Regression Step
     private func quantileRegressionStep(data: [Float], current: [Float], quantile: Float, lambda: Float) -> [Float] {
@@ -128,15 +274,22 @@ final class Study {
     }
     
     // MARK: - Denoising
+    // MARK: - Denoising
     private func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {
         let count = magnitudes.count
-        var denoised = [Float](repeating: 0, count: count)
+        var denoised = [Float](repeating: -80, count: count) // Start with minimum dB
         
         for i in 0..<count {
-            // Max everything below the floor to the floor value
-            let floored = max(magnitudes[i], noiseFloor[i])
-            // Then subtract the floor
-            denoised[i] = floored - noiseFloor[i]
+            // Calculate the relative height above the noise floor
+            let relativeHeight = magnitudes[i] - noiseFloor[i]
+            
+            // Only keep positive differences (peaks above noise floor)
+            if relativeHeight > 0 {
+                denoised[i] = relativeHeight
+            } else {
+                // Keep at -80 dB for values at or below the noise floor
+                denoised[i] = -80
+            }
         }
         
         return denoised

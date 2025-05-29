@@ -48,11 +48,10 @@ final class StudyGraphView: UIView {
                  minDB: minDB, dbRange: dbRange,
                  color: UIColor.systemRed.withAlphaComponent(0.7))
         
-        // Draw denoised spectrum (green)
-        drawCurve(ctx: ctx, data: result.denoisedSpectrum,
-                 width: width, height: height,
-                 minDB: minDB, dbRange: dbRange,
-                 color: UIColor.systemGreen)
+        // Draw denoised spectrum (green) - special handling for relative heights
+        drawRelativeHeightCurve(ctx: ctx, data: result.denoisedSpectrum,
+                               width: width, height: height,
+                               color: UIColor.systemGreen)
         
         ctx.restoreGState()
         
@@ -63,7 +62,62 @@ final class StudyGraphView: UIView {
         ]
         "Denoised Spectrum".draw(at: CGPoint(x: padding, y: 2), withAttributes: attributes)
     }
-    
+
+    // Add this new method for drawing relative heights
+    private func drawRelativeHeightCurve(ctx: CGContext, data: [Float],
+                                       width: CGFloat, height: CGFloat,
+                                       color: UIColor) {
+        ctx.setStrokeColor(color.cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.setFillColor(color.withAlphaComponent(0.3).cgColor)
+        
+        let path = CGMutablePath()
+        var fillPath = CGMutablePath()
+        
+        // Find max relative height for scaling
+        let maxHeight = data.filter { $0 > -80 }.max() ?? 20
+        let scale = height / CGFloat(max(maxHeight, 20)) // At least 20 dB range
+        
+        // Start fill path from bottom
+        fillPath.move(to: CGPoint(x: 0, y: height))
+        
+        var started = false
+        for (i, value) in data.enumerated() {
+            let x = CGFloat(i) * width / CGFloat(data.count - 1)
+            
+            if value > -80 {
+                // Draw from bottom up
+                let relativeHeight = CGFloat(max(0, value))
+                let y = height - (relativeHeight * scale)
+                
+                if !started {
+                    path.move(to: CGPoint(x: x, y: y))
+                    started = true
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+                
+                fillPath.addLine(to: CGPoint(x: x, y: y))
+            } else {
+                // Gap in the signal - move to bottom
+                if started {
+                    fillPath.addLine(to: CGPoint(x: x, y: height))
+                }
+            }
+        }
+        
+        // Complete fill path
+        fillPath.addLine(to: CGPoint(x: width, y: height))
+        fillPath.closeSubpath()
+        
+        // Draw filled area first
+        ctx.addPath(fillPath)
+        ctx.fillPath()
+        
+        // Then draw outline
+        ctx.addPath(path)
+        ctx.strokePath()
+    }
     private func drawCurve(ctx: CGContext, data: [Float],
                           width: CGFloat, height: CGFloat,
                           minDB: Float, dbRange: Float,

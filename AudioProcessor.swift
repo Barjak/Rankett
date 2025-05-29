@@ -18,6 +18,8 @@ final class AudioProcessor: ObservableObject {
     private var smoothingTimer: Timer?
     
     @Published var spectrumData: [Float] = []
+    @Published var studyResult: StudyResult?
+    private var studyInProgress = false
     
     init(config: Config = Config()) {
         self.config = config
@@ -141,6 +143,16 @@ final class AudioProcessor: ObservableObject {
             self.spectrumData = Array(
                 UnsafeBufferPointer(start: currentPtr, count: self.config.outputBinCount)
             )
+        }
+    }
+    
+    func triggerStudy() {
+        guard !studyInProgress else { return }
+        studyInProgress = true
+        
+        analyzer.dispatchStudy(pool: pool) { [weak self] result in
+            self?.studyResult = result
+            self?.studyInProgress = false
         }
     }
 }

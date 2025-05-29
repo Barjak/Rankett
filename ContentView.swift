@@ -44,7 +44,38 @@ struct ContentView: View {
             .foregroundColor(.secondary)
             .padding(.horizontal, 30)
             
-            Spacer()
+            // In ContentView body, replace the Spacer() with:
+            // Study result display
+            if audioProcessor.studyResult != nil {
+                StudyView(studyResult: audioProcessor.studyResult)
+                    .frame(height: 200)
+                    .background(Color.black)
+                    .cornerRadius(12)
+                    .shadow(radius: 5)
+                    .padding(.horizontal)
+            } else {
+                Rectangle()
+                    .fill(Color.black.opacity(0.3))
+                    .frame(height: 200)
+                    .cornerRadius(12)
+                    .padding(.horizontal)
+                    .overlay(
+                        Text("Press 'Analyze Spectrum' to see denoised signal")
+                            .foregroundColor(.gray)
+                            .font(.caption)
+                    )
+            }
+
+            // Update the button action:
+            Button("Analyze Spectrum") {
+                audioProcessor.triggerStudy()
+            }
+            .font(.caption)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(Color.green)
+            .foregroundColor(.white)
+            .cornerRadius(8)
             
             // Control button
             Button(action: toggleProcessing) {

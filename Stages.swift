@@ -217,12 +217,16 @@ final class SpectrumAnalyzer {
     private let frequencyMapper: FrequencyMapper
     private let statsSuppressor: StatsSuppressor?
     
+    private let study: Study
+    private var studyCompletion: ((StudyResult) -> Void)?
+    
     private var frameTimes: [TimeInterval] = []
     private let maxSamples = 30
     private var lastProcessTime: TimeInterval = CACurrentMediaTime()
     
     init(config: Config) {
         self.config = config
+        self.study = Study(config: config)
         self.windowProcessor = WindowProcessor(type: .blackmanHarris, size: config.fftSize)
         self.fftProcessor = FFTProcessor(size: config.fftSize)
         self.magnitudeProcessor = MagnitudeProcessor(convertToDb: true)
@@ -235,7 +239,33 @@ final class SpectrumAnalyzer {
             self.statsSuppressor = nil
         }
     }
-    
+    func dispatchStudy(pool: MemoryPool, completion: @escaping (StudyResult) -> Void) {
+        // Get current magnitude data
+        let magnitudePtr = pool.magnitude.pointer(in: pool)
+        let magnitudeCount = config.fftSize / 2
+        
+        // Copy magnitudes to array for study
+        let magnitudes = Array(UnsafeBufferPointer(start: magnitudePtr, count: magnitudeCount))
+        
+        // If using log scale, get the mapped bins
+        let studyMagnitudes: [Float]
+        if config.useLogFrequencyScale {
+            var mapped = [Float](repeating: -80, count: config.outputBinCount)
+            frequencyMapper.mapBins(
+                input: magnitudePtr,
+                output: &mapped,
+                inputCount: magnitudeCount,
+                outputCount: config.outputBinCount
+            )
+            studyMagnitudes = mapped
+        } else {
+            // Use first outputBinCount bins
+            studyMagnitudes = Array(magnitudes.prefix(config.outputBinCount))
+        }
+        
+        // Dispatch study
+        study.performStudy(magnitudes: studyMagnitudes, completion: completion)
+    }
     func analyze(pool: MemoryPool) {
         let currentTime = CACurrentMediaTime()
         let deltaTime = currentTime - lastProcessTime

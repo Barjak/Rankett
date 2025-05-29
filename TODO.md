@@ -1,6 +1,5 @@
 #  TODO
 
-# Fix streaming issue
 # Fix rendering scales and bounds
 
 # Remove noise floor

@@ -1,5 +1,6 @@
 import Foundation
 import Accelerate
+import CoreML
 
 // MARK: - Study Result
 struct StudyResult {
@@ -12,15 +13,24 @@ struct StudyResult {
 
 // MARK: - Study Object
 struct NoiseFloorConfig {
-    var method: Study.NoiseFloorMethod = .quantileRegression
+    var method: Study.NoiseFloorMethod = .whittaker
     var thresholdOffset: Float = 10.0  // dB above fitted floor
-    var quantile: Float = 0.1  // For quantile regression
-    var huberDelta: Float = 1.0  // For Huber method
-    var huberAsymmetry: Float = 2.0  // For Huber method
-    var smoothingSigma: Float = 1.0  // Final smoothing
+
+    // Quantile Regression
+    var quantile: Float = 0.1
+
+    // Huber Loss
+    var huberDelta: Float = 1.0
+    var huberAsymmetry: Float = 2.0
+
+    // Common smoothing
+    var smoothingSigma: Float = 1.0
+
+    // Whittaker Smoother
+    var whittakerLambda: Float = 1000.0   // Controls smoothing strength
+    var whittakerOrder: Int = 2           // Usually 2 (second derivative penalty)
 }
 
-// Then update Study to use this config
 final class Study {
     private let config: Config
     private let noiseConfig: NoiseFloorConfig
@@ -43,6 +53,7 @@ final class Study {
         case quantileRegression
         case huberAsymmetric
         case parametric1OverF
+        case whittaker
     }
     
     private let method: NoiseFloorMethod = .quantileRegression  // Change this to try different methods
@@ -64,6 +75,8 @@ final class Study {
                 noiseFloor = self.fitNoiseFloorHuber(magnitudes: magnitudes)
             case .parametric1OverF:
                 noiseFloor = self.fitNoiseFloorParametric(magnitudes: magnitudes, frequencies: frequencies)
+            case .whittaker:
+                noiseFloor = self.fitNoiseFloorWhittaker(magnitudes: magnitudes)
             }
             
             // Apply threshold offset - raise the floor by N dB
@@ -83,6 +96,18 @@ final class Study {
                 completion(result)
             }
         }
+    }
+    
+    private func fitNoiseFloorWhittaker(magnitudes: [Float]) -> [Float] {
+        let lambda = noiseConfig.whittakerLambda
+        guard let smoothed = whittakerSmooth(signal: magnitudes, lambda: lambda) else {
+            return magnitudes
+        }
+        
+        let offset = noiseConfig.thresholdOffset
+        let adjusted = smoothed.map { $0 + offset }
+        
+        return adjusted.enumerated().map { min($0.element, magnitudes[$0.offset]) } // clamp to original
     }
     
     // MARK: - Method 1: Quantile Regression (original)
@@ -230,6 +255,43 @@ final class Study {
         return noiseFloor
     }
     
+    // MARK: - Whittaker Smoother
+    private func whittakerSmooth(signal: [Float], lambda: Float) -> [Float]? {
+        let n = signal.count
+        guard n >= 3 else { return signal }
+
+        // Construct second difference matrix D (size: (n-2) x n)
+        var D = [Float](repeating: 0.0, count: (n - 2) * n)
+        for i in 0..<n - 2 {
+            D[i * n + i] = 1.0
+            D[i * n + i + 1] = -2.0
+            D[i * n + i + 2] = 1.0
+        }
+
+        // Compute Dᵀ * D
+        var DT_D = [Float](repeating: 0.0, count: n * n)
+        vDSP_mmul(D, 1, D, 1, &DT_D, 1, vDSP_Length(n), vDSP_Length(n), vDSP_Length(n - 2))
+
+        // Add lambda * Dᵀ * D to identity matrix
+        for i in 0..<n {
+            DT_D[i * n + i] += lambda
+        }
+
+        // Solve linear system (I + lambda DᵀD) * y = x
+        var A = DT_D
+        var b = signal
+        var N = __CLPK_integer(n)
+        var NRHS = __CLPK_integer(1)
+        var LDA = N
+        var IPIV = [__CLPK_integer](repeating: 0, count: n)
+        var LDB = N
+        var INFO: __CLPK_integer = 0
+
+        sgesv_(&N, &NRHS, &A, &LDA, &IPIV, &b, &LDB, &INFO)
+
+        return INFO == 0 ? b : nil
+    }
+    
     
     // MARK: - Quantile Regression Step
     private func quantileRegressionStep(data: [Float], current: [Float], quantile: Float, lambda: Float) -> [Float] {
@@ -272,8 +334,7 @@ final class Study {
         
         return result
     }
-    
-    // MARK: - Denoising
+
     // MARK: - Denoising
     private func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {
         let count = magnitudes.count

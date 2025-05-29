@@ -4,11 +4,8 @@ struct Config {
     let fftSize: Int = 8192 * 1 // Keep large for accuracy
     let outputBinCount: Int = 512
     
-    // Reduced hop size for better time resolution
-    // At 60 FPS, we want to advance ~735 samples per frame
-    // But round to a nice number for efficiency
     var hopSize: Int {
-        return 1024  // ~86 windows per second, plenty for 60 FPS
+        return 512  // ~86 windows per second, plenty for 60 FPS
     }
     
     let frameInterval: TimeInterval = 1.0 / 60.0  // 60 FPS target

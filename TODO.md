@@ -2,7 +2,7 @@
 
 # Fix rendering scales and bounds
 
-# Remove noise floor
+
 # Find peaks
 # Do time domain tracking
 # Use Newton's method in the frequency domain to find peaks

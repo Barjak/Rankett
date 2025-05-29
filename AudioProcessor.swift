@@ -54,7 +54,7 @@ final class AudioProcessor: ObservableObject {
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
         
         // Install tap
-        let tapBufferSize = AVAudioFrameCount(1024)
+        let tapBufferSize = AVAudioFrameCount(config.hopSize)
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }

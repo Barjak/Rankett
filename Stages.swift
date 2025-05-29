@@ -1,5 +1,6 @@
 import Foundation
 import Accelerate
+import QuartzCore
 
 // Minimal protocol - stages just need access to the pool
 protocol Stage {
@@ -376,25 +377,47 @@ struct AWeightingStage: Stage {
 }
 
 // MARK: - Pipeline Builder
+import Foundation
+import QuartzCore
+
 struct ProcessingPipeline {
     let stages: [Stage]
-    
+    private var lastProcessTime: TimeInterval = CACurrentMediaTime()
+    private var frameTimes: [TimeInterval] = []
+    private let maxSamples = 30
+
     static func build(config: Config) -> ProcessingPipeline {
-            let stages: [Stage] = [
-                WindowStage(type: .blackmanHarris, size: config.fftSize),
-                FFTStage(size: config.fftSize),
-                MagnitudeStage(convertToDb: false), // Keep linear for loudness weighting
-                LoudnessContourStage(config: config, phonLevel: 40.0), // 40 phon contour
-                // Convert to dB after loudness weighting if needed
-                MagnitudeStage(convertToDb: true),
-                FrequencyBinningStage(config: config)
-            ]
-            return ProcessingPipeline(stages: stages)
+        let stages: [Stage] = [
+            WindowStage(type: .blackmanHarris, size: config.fftSize),
+            FFTStage(size: config.fftSize),
+            MagnitudeStage(convertToDb: false),
+            MagnitudeStage(convertToDb: true),
+            FrequencyBinningStage(config: config)
+        ]
+        return ProcessingPipeline(stages: stages)
+    }
+
+    mutating func process(pool: MemoryPool, config: Config) {
+        let currentTime = CACurrentMediaTime()
+        let deltaTime = currentTime - lastProcessTime
+        lastProcessTime = currentTime
+
+        // Ignore unreasonable delta (e.g., less than 0.001s or greater than 1s)
+        if deltaTime > 0.001 && deltaTime < 1.0 {
+            frameTimes.append(deltaTime)
+            if frameTimes.count > maxSamples {
+                frameTimes.removeFirst()
+            }
+
+            let averageDelta = frameTimes.reduce(0, +) / Double(frameTimes.count)
+            let averageFPS = 1.0 / averageDelta
+            print(String(format: "Average frame rate: %.2f FPS", averageFPS))
         }
-    
-    func process(pool: MemoryPool, config: Config) {
+
         for stage in stages {
             stage.process(pool: pool, config: config)
         }
     }
 }
+
+

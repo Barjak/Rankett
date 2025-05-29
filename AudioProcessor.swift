@@ -7,7 +7,7 @@ final class AudioProcessor: ObservableObject {
     private let config: Config
     private let pool: MemoryPool
     private var circularBuffer: CircularBuffer
-    private let pipeline: ProcessingPipeline
+    private var pipeline: ProcessingPipeline
     
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()

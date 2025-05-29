@@ -3,15 +3,15 @@ import Foundation
 struct Config {
     // Audio parameters
     let sampleRate: Double = 44100
-    let fftSize: Int = 8192
-    let hopSize: Int = 2048  // For 75% overlap
+    let fftSize: Int = 8192 * 2
+    let hopSize: Int = 1024  // For 75% overlap
     
     // Display parameters
     let outputBinCount: Int = 512
     let useLogFrequencyScale: Bool = true
     let minFrequency: Double = 20.0
     let maxFrequency: Double = 20000.0
-    let smoothingFactor: Float = 0.95
+    let smoothingFactor: Float = 0.2
     
     // Performance parameters
     let frameRate: Double = 60.0

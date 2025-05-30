@@ -23,7 +23,7 @@ struct ContentView: View {
         
         var body: some View {
                 GeometryReader { geo in
-                        VStack(spacing: 20) {
+                        VStack(spacing: 0) {  // Changed spacing to 0
                                 
                                 // MARK: - Spectrum View
                                 SpectrumView(
@@ -31,8 +31,6 @@ struct ContentView: View {
                                         config: audioProcessor.config
                                 )
                                 .background(Color.black)
-                                .cornerRadius(12)
-                                .shadow(radius: 4)
                                 .frame(
                                         maxWidth: .infinity,
                                         maxHeight: min(
@@ -46,8 +44,6 @@ struct ContentView: View {
                                 if audioProcessor.studyResult != nil {
                                         StudyView(studyResult: audioProcessor.studyResult)
                                                 .background(Color.black)
-                                                .cornerRadius(12)
-                                                .shadow(radius: 4)
                                                 .frame(
                                                         maxWidth: .infinity,
                                                         maxHeight: min(
@@ -78,10 +74,10 @@ struct ContentView: View {
                                 }
                                 .font(.body)
                                 .frame(height: 44)
+                                .padding()
                                 
                                 Spacer()
                         }
-                        .padding()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .onAppear { startProcessing() }

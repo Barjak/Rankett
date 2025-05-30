@@ -25,7 +25,7 @@ final class StudyGraphView: UIView {
                 guard let ctx = UIGraphicsGetCurrentContext(),
                       let result = studyResult else { return }
                 
-                let padding: CGFloat = 20
+                let padding: CGFloat = 40  // Increased for scale labels
                 let width = rect.width - 2 * padding
                 let height = rect.height - 2 * padding
                 
@@ -33,15 +33,25 @@ final class StudyGraphView: UIView {
                 ctx.setFillColor(UIColor.black.cgColor)
                 ctx.fill(rect)
                 
-                // Draw grid
-                drawGrid(ctx: ctx, rect: rect, padding: padding)
+                // Convert magnitude data to dB if needed
+                let originalDB = result.originalSpectrum.map { mag in
+                        20 * log10(max(mag, 1e-10))  // Convert to dB
+                }
+                let noiseFloorDB = result.noiseFloor.map { mag in
+                        20 * log10(max(mag, 1e-10))  // Convert to dB
+                }
+                
+                // Calculate actual dB range from data
+                let allValues = originalDB + noiseFloorDB
+                let minDB = allValues.min() ?? -80
+                let maxDB = allValues.max() ?? 0
+                let dbRange = maxDB - minDB
+                
+                // Draw grid with calculated range
+                drawGrid(ctx: ctx, rect: rect, padding: padding, minDB: minDB, maxDB: maxDB)
                 
                 ctx.saveGState()
                 ctx.translateBy(x: padding, y: padding)
-                
-                let minDB: Float = -80
-                let maxDB: Float = 20
-                let dbRange = maxDB - minDB
                 
                 // Calculate frequency range for x-axis scaling
                 let minFreq: Float = 20.0
@@ -50,28 +60,28 @@ final class StudyGraphView: UIView {
                 
                 // Draw original spectrum (blue, semi-transparent)
                 drawSpectrumCurve(ctx: ctx,
-                                  data: result.originalSpectrum,
+                                  data: originalDB,
                                   frequencies: result.frequencies,
                                   width: width, height: height,
                                   minDB: minDB, dbRange: dbRange,
                                   minFreq: minFreq, maxFreq: maxFreq,
                                   useLogScale: useLogScale,
-                                  color: UIColor.systemBlue.withAlphaComponent(0.3))
+                                  color: UIColor.systemBlue.withAlphaComponent(0.5))
                 
                 // Draw noise floor (red)
                 drawSpectrumCurve(ctx: ctx,
-                                  data: result.noiseFloor,
+                                  data: noiseFloorDB,
                                   frequencies: result.frequencies,
                                   width: width, height: height,
                                   minDB: minDB, dbRange: dbRange,
                                   minFreq: minFreq, maxFreq: maxFreq,
                                   useLogScale: useLogScale,
-                                  color: UIColor.systemRed.withAlphaComponent(0.7))
+                                  color: UIColor.systemRed)
                 
-                // Draw denoised spectrum (green) - this is the original with noise removed
+                // Draw denoised spectrum (green)
                 drawDenoisedSpectrum(ctx: ctx,
-                                     original: result.originalSpectrum,
-                                     noiseFloor: result.noiseFloor,
+                                     original: originalDB,
+                                     noiseFloor: noiseFloorDB,
                                      frequencies: result.frequencies,
                                      width: width, height: height,
                                      minDB: minDB, dbRange: dbRange,
@@ -79,9 +89,22 @@ final class StudyGraphView: UIView {
                                      useLogScale: useLogScale,
                                      color: UIColor.systemGreen)
                 
+                // Draw HPS if available
+                if let hps = result.hpsSpectrum {
+                        drawSpectrumCurve(ctx: ctx,
+                                          data: hps,
+                                          frequencies: result.frequencies,
+                                          width: width, height: height,
+                                          minDB: minDB, dbRange: dbRange,
+                                          minFreq: minFreq, maxFreq: maxFreq,
+                                          useLogScale: useLogScale,
+                                          color: UIColor.systemPurple)
+                }
+                
                 // Draw peak markers
                 drawPeaks(ctx: ctx,
                           peaks: result.peaks,
+                          originalDB: originalDB,
                           frequencies: result.frequencies,
                           width: width, height: height,
                           minDB: minDB, dbRange: dbRange,
@@ -91,7 +114,7 @@ final class StudyGraphView: UIView {
                 ctx.restoreGState()
                 
                 // Draw legend
-                drawLegend(ctx: ctx, rect: rect, padding: padding)
+                drawLegend(ctx: ctx, rect: rect, padding: padding, hasHPS: result.hpsSpectrum != nil)
         }
         
         private func drawSpectrumCurve(ctx: CGContext,
@@ -103,7 +126,7 @@ final class StudyGraphView: UIView {
                                        useLogScale: Bool,
                                        color: UIColor) {
                 ctx.setStrokeColor(color.cgColor)
-                ctx.setLineWidth(1.5)
+                ctx.setLineWidth(0.8)
                 
                 let path = CGMutablePath()
                 var started = false
@@ -151,7 +174,7 @@ final class StudyGraphView: UIView {
                                           useLogScale: Bool,
                                           color: UIColor) {
                 ctx.setStrokeColor(color.cgColor)
-                ctx.setLineWidth(2.0)
+                ctx.setLineWidth(0.8)
                 ctx.setFillColor(color.withAlphaComponent(0.2).cgColor)
                 
                 let path = CGMutablePath()
@@ -203,6 +226,7 @@ final class StudyGraphView: UIView {
         
         private func drawPeaks(ctx: CGContext,
                                peaks: [Peak],
+                               originalDB: [Float],  // Added this parameter
                                frequencies: [Float],
                                width: CGFloat, height: CGFloat,
                                minDB: Float, dbRange: Float,
@@ -224,7 +248,9 @@ final class StudyGraphView: UIView {
                                 x = CGFloat((freq - minFreq) / (maxFreq - minFreq)) * width
                         }
                         
-                        let normalizedValue = (peak.magnitude - minDB) / dbRange
+                        // Use the actual magnitude from originalDB at the peak index
+                        let peakMagnitudeDB = originalDB[peak.index]
+                        let normalizedValue = (peakMagnitudeDB - minDB) / dbRange
                         let y = height * (1 - CGFloat(max(0, min(1, normalizedValue))))
                         
                         // Draw circle at peak
@@ -240,18 +266,23 @@ final class StudyGraphView: UIView {
                 }
         }
         
-        private func drawLegend(ctx: CGContext, rect: CGRect, padding: CGFloat) {
+        private func drawLegend(ctx: CGContext, rect: CGRect, padding: CGFloat, hasHPS: Bool) {
                 let attributes: [NSAttributedString.Key: Any] = [
                         .font: UIFont.systemFont(ofSize: 10),
                         .foregroundColor: UIColor.white
                 ]
                 
-                let legendItems = [
-                        ("Original", UIColor.systemBlue.withAlphaComponent(0.3)),
-                        ("Noise Floor", UIColor.systemRed.withAlphaComponent(0.7)),
+                var legendItems = [
+                        ("Original", UIColor.systemBlue.withAlphaComponent(0.5)),
+                        ("Noise Floor", UIColor.systemRed),
                         ("Denoised", UIColor.systemGreen),
                         ("Peaks", UIColor.systemYellow)
                 ]
+                
+                // Add HPS to legend if present
+                if hasHPS {
+                        legendItems.append(("HPS", UIColor.systemPurple))
+                }
                 
                 var x = padding
                 let y: CGFloat = 5
@@ -271,7 +302,7 @@ final class StudyGraphView: UIView {
                 }
         }
         
-        private func drawGrid(ctx: CGContext, rect: CGRect, padding: CGFloat) {
+        private func drawGrid(ctx: CGContext, rect: CGRect, padding: CGFloat, minDB: Float, maxDB: Float) {
                 ctx.saveGState()
                 
                 let width = rect.width - 2 * padding
@@ -280,19 +311,25 @@ final class StudyGraphView: UIView {
                 ctx.setStrokeColor(UIColor.systemGray.withAlphaComponent(0.2).cgColor)
                 ctx.setLineWidth(0.5)
                 
-                // Draw horizontal lines (dB scale)
-                let dbLines: [Float] = [20, 0, -20, -40, -60, -80]
-                for db in dbLines {
-                        let y = padding + height * CGFloat(1 - (db + 80) / 100)
-                        ctx.move(to: CGPoint(x: padding, y: y))
-                        ctx.addLine(to: CGPoint(x: rect.width - padding, y: y))
-                        
-                        // Draw label
-                        let attributes: [NSAttributedString.Key: Any] = [
-                                .font: UIFont.systemFont(ofSize: 9),
-                                .foregroundColor: UIColor.systemGray
-                        ]
-                        "\(Int(db))".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
+                // Draw horizontal lines (dB scale) - dynamically based on range
+                let dbRange = maxDB - minDB
+                let dbStep: Float = dbRange > 60 ? 20 : 10
+                
+                var db = floor(minDB / dbStep) * dbStep
+                while db <= ceil(maxDB / dbStep) * dbStep {
+                        if db >= minDB && db <= maxDB {
+                                let y = padding + height * CGFloat(1 - (db - minDB) / dbRange)
+                                ctx.move(to: CGPoint(x: padding, y: y))
+                                ctx.addLine(to: CGPoint(x: rect.width - padding, y: y))
+                                
+                                // Draw label
+                                let attributes: [NSAttributedString.Key: Any] = [
+                                        .font: UIFont.systemFont(ofSize: 9),
+                                        .foregroundColor: UIColor.systemGray
+                                ]
+                                "\(Int(db)) dB".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
+                        }
+                        db += dbStep
                 }
                 
                 // Draw vertical lines (frequency scale)

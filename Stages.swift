@@ -58,6 +58,7 @@ final class SpectrumAnalyzer {
         private let binMap: [Int]  // For log frequency mapping
         
         // All working buffers
+        private let rawInputBuffer: UnsafeMutableBufferPointer<Float>
         private let windowedBuffer: UnsafeMutableBufferPointer<Float>
         private let fftReal: UnsafeMutableBufferPointer<Float>
         private let fftImag: UnsafeMutableBufferPointer<Float>
@@ -100,6 +101,7 @@ final class SpectrumAnalyzer {
                 }
                 
                 // Allocate all working buffers
+                let rawPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.size)
                 let windowedPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.size)
                 let realPtr = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 let imagPtr = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
@@ -107,6 +109,7 @@ final class SpectrumAnalyzer {
                 let mappedPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
                 let smoothPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
                 
+                self.rawInputBuffer = UnsafeMutableBufferPointer(start: rawPtr, count: config.fft.size)
                 self.windowedBuffer = UnsafeMutableBufferPointer(start: windowedPtr, count: config.fft.size)
                 self.fftReal = UnsafeMutableBufferPointer(start: realPtr, count: halfSize)
                 self.fftImag = UnsafeMutableBufferPointer(start: imagPtr, count: halfSize)
@@ -124,6 +127,7 @@ final class SpectrumAnalyzer {
         }
         
         deinit {
+                rawInputBuffer.deallocate()
                 windowedBuffer.deallocate()
                 fftReal.deallocate()
                 fftImag.deallocate()
@@ -139,7 +143,8 @@ final class SpectrumAnalyzer {
                 let realPtr = fftReal.baseAddress!
                 let imagPtr = fftImag.baseAddress!
                 let magPtr = magnitude.baseAddress!
-                
+                memcpy(rawInputBuffer.baseAddress!, input, config.fft.size * MemoryLayout<Float>.size)
+
                 // Step 1: Copy input and apply window
                 memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
                 window.withUnsafeBufferPointer { windowPtr in
@@ -215,7 +220,7 @@ final class SpectrumAnalyzer {
                 // Create copies of the current data
                 let realCopy = Array(fftReal)
                 let imagCopy = Array(fftImag)
-                let timeCopy = Array(windowedBuffer)  // This has the windowed data
+                let timeCopy = Array(rawInputBuffer)
                 let magCopy = Array(magnitude)
                 
                 return StudyData(

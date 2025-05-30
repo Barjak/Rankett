@@ -44,31 +44,32 @@ final class SpectrumGraphView: UIView {
                 guard let ctx = UIGraphicsGetCurrentContext(),
                       !spectrumData.isEmpty else { return }
                 
-                let padding: CGFloat = 20
+                let padding: CGFloat = 40  // Increased for labels
                 let width = rect.width - 2 * padding
                 let height = rect.height - 2 * padding
                 
-                // Draw grid
-                drawGrid(ctx: ctx, rect: rect, padding: padding)
+                // Draw grid with proper dB range
+                let minDB: Float = -80
+                let maxDB: Float = 20
+                drawGrid(ctx: ctx, rect: rect, padding: padding, minDB: minDB, maxDB: maxDB)
                 
                 // Draw spectrum
                 ctx.saveGState()
                 ctx.translateBy(x: padding, y: padding)
                 ctx.setStrokeColor(UIColor.systemBlue.cgColor)
-                ctx.setLineWidth(1)
+                ctx.setLineWidth(0.8)
                 ctx.setLineCap(.round)
                 ctx.setLineJoin(.round)
                 
                 // Create path
                 let path = CGMutablePath()
-                let minDB: Float = -80
-                let maxDB: Float = 60
                 let dbRange = maxDB - minDB
                 
                 for (i, magnitude) in spectrumData.enumerated() {
                         let x = CGFloat(i) * width / CGFloat(spectrumData.count - 1)
-                        let normalizedMag = (magnitude - minDB) / dbRange
-                        let y = height * (1 - CGFloat(max(0, min(1, normalizedMag))))
+                        let clampedMag = max(minDB, min(maxDB, magnitude))
+                        let normalizedMag = (clampedMag - minDB) / dbRange
+                        let y = height * (1 - CGFloat(normalizedMag))
                         
                         if i == 0 {
                                 path.move(to: CGPoint(x: x, y: y))
@@ -82,7 +83,7 @@ final class SpectrumGraphView: UIView {
                 ctx.restoreGState()
         }
         
-        private func drawGrid(ctx: CGContext, rect: CGRect, padding: CGFloat) {
+        private func drawGrid(ctx: CGContext, rect: CGRect, padding: CGFloat, minDB: Float, maxDB: Float) {
                 ctx.saveGState()
                 
                 let width = rect.width - 2 * padding
@@ -94,17 +95,34 @@ final class SpectrumGraphView: UIView {
                 ctx.setLineDash(phase: 0, lengths: [2, 2])
                 
                 // Draw horizontal lines (dB scale)
+                let dbStep: Float = 20
+                var db = minDB
+                while db <= maxDB {
+                        let y = padding + height * CGFloat(1 - (db - minDB) / (maxDB - minDB))
+                        ctx.move(to: CGPoint(x: padding, y: y))
+                        ctx.addLine(to: CGPoint(x: rect.width - padding, y: y))
+                        
+                        // Draw label
+                        let attributes: [NSAttributedString.Key: Any] = [
+                                .font: UIFont.systemFont(ofSize: 10),
+                                .foregroundColor: UIColor.systemGray
+                        ]
+                        "\(Int(db)) dB".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
+                        
+                        db += dbStep
+                }
+                // Draw horizontal lines (dB scale)
                 let dbLines: [(db: Float, alpha: CGFloat)] = [
                         (0, 0.5), (-20, 0.3), (-40, 0.3), (-60, 0.3), (-80, 0.5)
                 ]
                 
-                for (db, alpha) in dbLines {
-                        ctx.setStrokeColor(UIColor.systemGray.withAlphaComponent(alpha).cgColor)
-                        let y = padding + height * CGFloat(1 + db / 80)
-                        ctx.move(to: CGPoint(x: padding, y: y))
-                        ctx.addLine(to: CGPoint(x: rect.width - padding, y: y))
-                        ctx.strokePath()
-                }
+//                for (db, alpha) in dbLines {
+//                        ctx.setStrokeColor(UIColor.systemGray.withAlphaComponent(alpha).cgColor)
+//                        let y = padding + height * CGFloat(1 + db / 80)
+//                        ctx.move(to: CGPoint(x: padding, y: y))
+//                        ctx.addLine(to: CGPoint(x: rect.width - padding, y: y))
+//                        ctx.strokePath()
+//                }
                 
                 // Draw vertical lines (frequency scale)
                 if config.rendering.useLogFrequencyScale {
@@ -122,14 +140,6 @@ final class SpectrumGraphView: UIView {
                         .font: UIFont.systemFont(ofSize: 10),
                         .foregroundColor: UIColor.systemGray
                 ]
-                
-                // dB labels
-                for (db, _) in dbLines {
-                        let text = "\(Int(db)) dB"
-                        let size = text.size(withAttributes: attributes)
-                        let y = padding + height * CGFloat(1 + db / 80) - size.height / 2
-                        text.draw(at: CGPoint(x: 2, y: y), withAttributes: attributes)
-                }
                 
                 // Frequency labels
                 if config.rendering.useLogFrequencyScale {

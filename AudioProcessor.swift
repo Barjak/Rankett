@@ -30,7 +30,8 @@ final class AudioProcessor: ObservableObject {
         
         // Working buffer for window extraction
         private let windowBuffer: UnsafeMutableBufferPointer<Float>
-        
+        private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
+
         // Published data (smoothed for display)
         @Published var spectrumData: [Float] = []
         @Published var studyResult: StudyResult?
@@ -193,8 +194,8 @@ final class AudioProcessor: ObservableObject {
                 // Capture current analysis data
                 let studyData = analyzer.captureStudyData()
                 
-                // Process study on background queue
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                // Process study on dedicated queue
+                studyQueue.async { [weak self] in
                         let result = Study.perform(
                                 data: studyData,
                                 config: self?.config ?? .default

@@ -11,13 +11,9 @@ struct StudyResult {
         let frequencies: [Float]
         let peaks: [Peak]
         let timestamp: Date
-        
-        // Additional analysis results
-//        let fundamental: Float?
-//        let harmonics: [Float]
-//        let spectralCentroid: Float
-//        let spectralFlux: Float
+        let hpsSpectrum: [Float]?
 }
+
 
 struct Peak {
         let index: Int
@@ -67,29 +63,10 @@ enum Study {
                         config: config.peakDetection
                 )
                 
-//                // Find fundamental frequency
-//                let fundamental = findFundamental(
-//                        magnitudes: magnitudes,
-//                        sampleRate: data.sampleRate
-//                )
-//                
-//                // Find harmonics
-//                let harmonics = findHarmonics(
-//                        magnitudes: magnitudes,
-//                        fundamental: fundamental,
-//                        sampleRate: data.sampleRate
-//                )
-//                
-//                // Compute spectral features
-//                let centroid = computeSpectralCentroid(
-//                        magnitudes: magnitudes,
-//                        frequencies: frequencies
-//                )
-//                
-//                let flux = computeSpectralFlux(
-//                        current: magnitudes,
-//                        previous: nil  // Would need previous frame in real implementation
-//                )
+                let hps = computeWeightedHPS(
+                        magnitudes: magnitudes,
+                        frequencies: frequencies
+                )
                 
                 return StudyResult(
                         originalSpectrum: magnitudes,
@@ -98,31 +75,35 @@ enum Study {
                         frequencies: frequencies,
                         peaks: peaks,
                         timestamp: Date(timeIntervalSince1970: data.timestamp),
-//                        fundamental: fundamental,
-//                        harmonics: harmonics,
-//                        spectralCentroid: centroid,
-//                        spectralFlux: flux
+                        hpsSpectrum: hps,
                 )
         }
         
                 
-        
-        
+        static func computeWeightedHPS(magnitudes: [Float], frequencies: [Float]) -> [Float] {
+                // Mock implementation - replace with real HPS later
+                let count = magnitudes.count
+                var hps = [Float](repeating: 0, count: count)
+                
+                // For now, just create a mock spectrum with peaks at harmonics
+                for i in 0..<count {
+                        let freq = frequencies[i]
+                        // Create mock peaks at 440Hz and harmonics
+                        let fundamental: Float = 440.0
+                        for harmonic in 1...5 {
+                                let harmonicFreq = fundamental * Float(harmonic)
+                                let distance = abs(freq - harmonicFreq)
+                                if distance < 20 {
+                                        let weight = 1.0 / Float(harmonic)
+                                        hps[i] += magnitudes[i] * weight * exp(-distance / 10)
+                                }
+                        }
+                }
+                
+                return hps
+        }
 
-//        // MARK: - Find Fundamental
-//        
-//        static func findFundamental(magnitudes: [Float], sampleRate: Float) -> Float? {
-//                // TODO: Implement HPS or other fundamental detection
-//                return nil
-//        }
-//        // MARK: - Find Harmonics
-//        static func findHarmonics(magnitudes: [Float],
-//                                  fundamental: Float?,
-//                                  sampleRate: Float) -> [Float] {
-//                // TODO: Implement harmonic analysis
-//                return []
-//        }
-//        
+        
 //        // MARK: - Compute Spectral Centroid
 //        
 //        static func computeSpectralCentroid(magnitudes: [Float],
@@ -137,21 +118,7 @@ enum Study {
 //                
 //                return magnitudeSum > 0 ? weightedSum / magnitudeSum : 0
 //        }
-//        // MARK: - Compute Spectral Flux
-//        static func computeSpectralFlux(current: [Float], previous: [Float]?) -> Float {
-//                guard let previous = previous else { return 0 }
-//                
-//                var flux: Float = 0
-//                for (curr, prev) in zip(current, previous) {
-//                        let diff = curr - prev
-//                        if diff > 0 {
-//                                flux += diff
-//                        }
-//                }
-//                
-//                return flux
-//        }
-//        
+
         
         // MARK: - Denoising
         

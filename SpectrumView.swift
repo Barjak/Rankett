@@ -3,12 +3,13 @@ import UIKit
 
 struct SpectrumView: UIViewRepresentable {
         let spectrumData: [Float]
-        let config: Config
+        let config: AnalyzerConfig  // Changed from Config to AnalyzerConfig
         
         func makeUIView(context: Context) -> SpectrumGraphView {
                 let view = SpectrumGraphView()
                 view.backgroundColor = .black
                 view.isOpaque = true
+                view.contentMode = .redraw  // Redraw on bounds change
                 return view
         }
         
@@ -21,17 +22,18 @@ struct SpectrumView: UIViewRepresentable {
 
 final class SpectrumGraphView: UIView {
         var spectrumData: [Float] = []
-        var config = Config()
+        var config = AnalyzerConfig.default  // Changed from Config()
         
-        // Pre-calculate frequency labels for efficiency
+        // Update frequency labels calculation
         private lazy var frequencyLabels: [(frequency: Float, x: CGFloat)] = {
-                guard config.useLogFrequencyScale else { return [] }
+                guard config.rendering.useLogFrequencyScale else { return [] }
                 
                 let frequencies: [Float] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
                 return frequencies.compactMap { freq in
-                        guard freq >= Float(config.minFrequency) && freq <= Float(config.maxFrequency) else { return nil }
-                        let logMin = log10(Float(config.minFrequency))
-                        let logMax = log10(Float(config.maxFrequency))
+                        guard freq >= Float(config.rendering.minFrequency) &&
+                                freq <= Float(config.rendering.maxFrequency) else { return nil }
+                        let logMin = log10(Float(config.rendering.minFrequency))
+                        let logMax = log10(Float(config.rendering.maxFrequency))
                         let logFreq = log10(freq)
                         let x = (logFreq - logMin) / (logMax - logMin)
                         return (freq, CGFloat(x))
@@ -105,7 +107,7 @@ final class SpectrumGraphView: UIView {
                 }
                 
                 // Draw vertical lines (frequency scale)
-                if config.useLogFrequencyScale {
+                if config.rendering.useLogFrequencyScale {
                         for (_, normalizedX) in frequencyLabels {
                                 let x = padding + normalizedX * width
                                 ctx.move(to: CGPoint(x: x, y: padding))
@@ -130,11 +132,11 @@ final class SpectrumGraphView: UIView {
                 }
                 
                 // Frequency labels
-                if config.useLogFrequencyScale {
+                if config.rendering.useLogFrequencyScale {
                         for (freq, normalizedX) in frequencyLabels {
                                 let text = freq >= 1000 ? "\(Int(freq/1000))k" : "\(Int(freq))"
                                 let size = text.size(withAttributes: attributes)
-                                let x = padding + normalizedX * width - size.width / 2
+                                let x = padding + normalizedX * width - size.width / 2  
                                 text.draw(at: CGPoint(x: x, y: rect.height - padding + 2), withAttributes: attributes)
                         }
                 }

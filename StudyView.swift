@@ -8,6 +8,7 @@ struct StudyView: UIViewRepresentable {
                 let view = StudyGraphView()
                 view.backgroundColor = .black
                 view.isOpaque = true
+                view.contentMode = .redraw  // Add this line
                 return view
         }
         

@@ -28,7 +28,7 @@ struct AnalyzerConfig {
         
         // MARK: - FFT / STFT
         struct FFT {
-                let size: Int                = 8_192
+                let size: Int                = 512 * 8
                 let outputBinCount: Int      = 512
                 let hopSize: Int             = 512                    // ≈ 86 windows/s
                 var frequencyResolution: Double {
@@ -42,7 +42,7 @@ struct AnalyzerConfig {
                 let targetFPS: Double = 60
                 var frameInterval: TimeInterval { 1.0 / targetFPS }
                 
-                let smoothingFactor: Float        = 0.1
+                let smoothingFactor: Float        = 0.85
                 let useLogFrequencyScale: Bool    = true
                 let minFrequency: Double          = 20
                 let maxFrequency: Double          = 20_000

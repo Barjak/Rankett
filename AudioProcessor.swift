@@ -5,7 +5,7 @@ import QuartzCore
 
 // MARK: - Audio Processor
 final class AudioProcessor: ObservableObject {
-        private let config: AnalyzerConfig
+        let config: AnalyzerConfig
         private let analyzer: SpectrumAnalyzer
         private let circularBuffer: CircularBuffer
         
@@ -29,7 +29,9 @@ final class AudioProcessor: ObservableObject {
         // Published data
         @Published var spectrumData: [Float] = []
         @Published var studyResult: StudyResult?
-        private var studyInProgress = false
+        
+        @Published var studyInProgress = false
+        
         
         init(config: AnalyzerConfig = .default) {
                 self.config = config
@@ -118,10 +120,10 @@ final class AudioProcessor: ObservableObject {
                 
                 // Process if we have enough data and enough time has passed
                 let now = CACurrentMediaTime()
-                if now - lastProcessTime >= config.rendering.frameInterval {
+                //if now - lastProcessTime >= config.rendering.frameInterval {
                         processAudio()
                         lastProcessTime = now
-                }
+                //}
         }
         
         private func processAudio() {

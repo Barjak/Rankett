@@ -1,39 +1,44 @@
 import Foundation
 import Accelerate
 
-struct CircularBuffer {
-        let region: MemoryPool.Region
-        private(set) var writeIndex: Int = 0
-        private(set) var availableSamples: Int = 0
+final class CircularBuffer {
+        private let buffer: UnsafeMutableBufferPointer<Float>
+        private let capacity: Int
+        private var writeIndex = 0
+        private var availableSamples = 0
         private let lock = NSLock()
         
-        mutating func write(_ samples: UnsafePointer<Float>, count: Int, to pool: MemoryPool) {
+        init(capacity: Int) {
+                self.capacity = capacity
+                let ptr = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
+                self.buffer = UnsafeMutableBufferPointer(start: ptr, count: capacity)
+                buffer.initialize(repeating: 0)
+        }
+        
+        deinit {
+                buffer.deallocate()
+        }
+        
+        func write(_ samples: UnsafePointer<Float>, count: Int) {
                 lock.lock()
                 defer { lock.unlock() }
                 
-                let ptr = region.pointer(in: pool)
-                let capacity = region.count
-                
-                // Handle potential overflow
-                let samplesToWrite = min(count, capacity)
-                if count > samplesToWrite {
-                        print("Warning: Dropping \(count - samplesToWrite) samples")
+                let toWrite = min(count, capacity)
+                if count > toWrite {
+                        print("Warning: Dropping \(count - toWrite) samples")
                 }
                 
-                // Copy in up to two chunks to handle wrap-around
-                let firstChunkSize = min(samplesToWrite, capacity - writeIndex)
-                let secondChunkSize = samplesToWrite - firstChunkSize
+                let ptr = buffer.baseAddress!
+                let first = min(toWrite, capacity - writeIndex)
+                let second = toWrite - first
                 
-                // First chunk
-                memcpy(ptr.advanced(by: writeIndex), samples, firstChunkSize * MemoryLayout<Float>.size)
-                
-                // Second chunk (wrap-around)
-                if secondChunkSize > 0 {
-                        memcpy(ptr, samples.advanced(by: firstChunkSize), secondChunkSize * MemoryLayout<Float>.size)
+                memcpy(ptr.advanced(by: writeIndex), samples, first * MemoryLayout<Float>.size)
+                if second > 0 {
+                        memcpy(ptr, samples.advanced(by: first), second * MemoryLayout<Float>.size)
                 }
                 
-                writeIndex = (writeIndex + samplesToWrite) % capacity
-                availableSamples = min(availableSamples + samplesToWrite, capacity)
+                writeIndex = (writeIndex + toWrite) % capacity
+                availableSamples = min(availableSamples + toWrite, capacity)
         }
         
         func canExtractWindow(of size: Int, at offset: Int = 0) -> Bool {
@@ -42,35 +47,28 @@ struct CircularBuffer {
                 return availableSamples >= size + offset
         }
         
-        func extractWindow(of size: Int, at offset: Int = 0, to workspace: MemoryPool.Region, in pool: MemoryPool) -> Bool {
+        @discardableResult
+        func extractWindow(of size: Int, at offset: Int = 0, to destination: UnsafeMutablePointer<Float>) -> Bool {
                 lock.lock()
                 defer { lock.unlock() }
                 
                 guard availableSamples >= size + offset else { return false }
                 
-                let srcPtr = region.pointer(in: pool)
-                let dstPtr = workspace.pointer(in: pool)
-                let capacity = region.count
+                let ptr = buffer.baseAddress!
+                let start = (writeIndex - availableSamples + offset + capacity) % capacity
+                let first = min(size, capacity - start)
+                let second = size - first
                 
-                // Calculate read position
-                let readStart = (writeIndex - availableSamples + offset + capacity) % capacity
-                
-                // Copy in up to two chunks
-                let firstChunkSize = min(size, capacity - readStart)
-                let secondChunkSize = size - firstChunkSize
-                
-                // First chunk
-                memcpy(dstPtr, srcPtr.advanced(by: readStart), firstChunkSize * MemoryLayout<Float>.size)
-                
-                // Second chunk (wrap-around)
-                if secondChunkSize > 0 {
-                        memcpy(dstPtr.advanced(by: firstChunkSize), srcPtr, secondChunkSize * MemoryLayout<Float>.size)
+                memcpy(destination, ptr.advanced(by: start), first * MemoryLayout<Float>.size)
+                if second > 0 {
+                        memcpy(destination.advanced(by: first), ptr, second * MemoryLayout<Float>.size)
                 }
                 
                 return true
         }
         
-        mutating func advance(by samples: Int) {
+        func advance(by samples: Int) {
+                guard samples > 0 else { return }
                 lock.lock()
                 defer { lock.unlock() }
                 availableSamples = max(0, availableSamples - samples)

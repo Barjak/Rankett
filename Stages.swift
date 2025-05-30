@@ -2,63 +2,50 @@ import Foundation
 import Accelerate
 import QuartzCore
 
-// MARK: - Window Processor
-final class WindowProcessor {
-        private let window: [Float]
-        
-        init(type: WindowType, size: Int) {
-                self.window = type.createWindow(size: size)
+// MARK: - Static Processing Functions
+
+enum WindowFunctions {
+        @inline(__always)
+        static func applyBlackmanHarris(_ input: UnsafeMutablePointer<Float>,
+                                        _ window: UnsafePointer<Float>,
+                                        _ count: Int) {
+                vDSP_vmul(input, 1, window, 1, input, 1, vDSP_Length(count))
         }
         
-        func applyWindow(input: UnsafeMutablePointer<Float>, output: UnsafeMutablePointer<Float>, count: Int) {
-                // Can do in-place if input == output
-                vDSP_vmul(input, 1, window, 1, output, 1, vDSP_Length(count))
+        static func createBlackmanHarris(size: Int) -> ContiguousArray<Float> {
+                var window = ContiguousArray<Float>(repeating: 0, count: size)
+                let a0: Float = 0.35875
+                let a1: Float = 0.48829
+                let a2: Float = 0.14128
+                let a3: Float = 0.01168
+                
+                for i in 0..<size {
+                        let phase = 2.0 * Float.pi * Float(i) / Float(size - 1)
+                        window[i] = a0 - a1 * cos(phase) + a2 * cos(2 * phase) - a3 * cos(3 * phase)
+                }
+                return window
         }
 }
 
-// MARK: - FFT Processor
-final class FFTProcessor {
-        private let setup: vDSP.FFT<DSPSplitComplex>
-        private let halfSize: Int
-        
-        init(size: Int) {
-                self.halfSize = size / 2
-                let log2n = vDSP_Length(log2(Float(size)))
-                guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {
-                        fatalError("Failed to create FFT setup")
-                }
-                self.setup = setup
-        }
-        
-        func forward(input: UnsafePointer<Float>,
-                     realOutput: UnsafeMutablePointer<Float>,
-                     imagOutput: UnsafeMutablePointer<Float>) {
-                // Pack real input for FFT (even/odd split)
+enum FFTFunctions {
+        @inline(__always)
+        static func packRealInput(_ input: UnsafePointer<Float>,
+                                  _ real: UnsafeMutablePointer<Float>,
+                                  _ imag: UnsafeMutablePointer<Float>,
+                                  _ halfSize: Int) {
                 for i in 0..<halfSize {
-                        realOutput[i] = input[i * 2]
-                        imagOutput[i] = input[i * 2 + 1]
+                        real[i] = input[i * 2]
+                        imag[i] = input[i * 2 + 1]
                 }
-                
-                // Create split complex structure
-                var splitComplex = DSPSplitComplex(realp: realOutput, imagp: imagOutput)
-                
-                // Perform FFT in-place
-                setup.forward(input: splitComplex, output: &splitComplex)
         }
 }
 
-// MARK: - Magnitude Processor
-final class MagnitudeProcessor {
-        
-        init() {
-                
-        }
-        
-        func computeMagnitudes(real: UnsafePointer<Float>,
-                               imag: UnsafePointer<Float>,
-                               output: UnsafeMutablePointer<Float>,
-                               count: Int,
-                               convertToDb: Bool) {
+enum MagnitudeFunctions {
+        @inline(__always)
+        static func computeMagnitudesDB(_ real: UnsafePointer<Float>,
+                                        _ imag: UnsafePointer<Float>,
+                                        _ output: UnsafeMutablePointer<Float>,
+                                        _ count: Int) {
                 var splitComplex = DSPSplitComplex(
                         realp: UnsafeMutablePointer(mutating: real),
                         imagp: UnsafeMutablePointer(mutating: imag)
@@ -67,355 +54,200 @@ final class MagnitudeProcessor {
                 // Calculate magnitudes
                 vDSP_zvmags(&splitComplex, 1, output, 1, vDSP_Length(count))
                 
-                if convertToDb {
-                        // First clamp to avoid log(0)
-                        var floor: Float = 1e-10
-                        var ceiling: Float = Float.greatestFiniteMagnitude
-                        vDSP_vclip(output, 1, &floor, &ceiling, output, 1, vDSP_Length(count))
-                        
-                        // Convert to dB with reference = 1.0
-                        var reference: Float = 1.0
-                        vDSP_vdbcon(output, 1, &reference, output, 1, vDSP_Length(count), 1)
-                }
+                // Clamp to avoid log(0)
+                var floor: Float = 1e-10
+                var ceiling: Float = Float.greatestFiniteMagnitude
+                vDSP_vclip(output, 1, &floor, &ceiling, output, 1, vDSP_Length(count))
+                
+                // Convert to dB
+                var reference: Float = 1.0
+                vDSP_vdbcon(output, 1, &reference, output, 1, vDSP_Length(count), 1)
         }
 }
 
-// MARK: - Frequency Mapper
-final class FrequencyMapper {
-        private let binMap: [Int]
-        private let linearBinning: Bool
-        
-        init(config: Config) {
-                if config.useLogFrequencyScale {
-                        self.binMap = Self.createLogBinMap(config: config)
-                        self.linearBinning = false
-                } else {
-                        self.binMap = []
-                        self.linearBinning = true
-                }
-        }
-        
-        private static func createLogBinMap(config: Config) -> [Int] {
-                let nyquist = config.nyquistFrequency
-                let maxBins = config.fftSize / 2
-                let logMin = log10(config.minFrequency)
-                let logMax = log10(min(config.maxFrequency, nyquist))
-                
-                return (0..<config.outputBinCount).map { i in
-                        let logFreq = logMin + (logMax - logMin) * Double(i) / Double(config.outputBinCount - 1)
-                        let freq = pow(10, logFreq)
-                        let binIndex = Int(freq / config.frequencyResolution)
-                        return min(binIndex, maxBins - 1)
-                }
-        }
-        
-        func mapBins(input: UnsafePointer<Float>,
-                     output: UnsafeMutablePointer<Float>,
-                     inputCount: Int,
-                     outputCount: Int) {
-                if linearBinning {
-                        // Just copy the first N bins
-                        let copyCount = min(outputCount, inputCount)
-                        memcpy(output, input, copyCount * MemoryLayout<Float>.size)
-                        
-                        // Fill remaining with minimum if needed
-                        if copyCount < outputCount {
-                                let minDB: Float = -80.0
-                                for i in copyCount..<outputCount {
-                                        output[i] = minDB
-                                }
-                        }
-                } else {
-                        // Apply log frequency mapping
-                        for i in 0..<outputCount {
-                                output[i] = input[binMap[i]]
-                        }
-                }
-        }
-}
-
-// MARK: - Stats-based Suppressor
-final class StatsSuppressor {
-        private let fftSize: Int
-        private let binCount: Int
-        
-        // Pre-allocated workspace
-        private let dbMagnitudes: UnsafeMutablePointer<Float>
-        
-        init(fftSize: Int) {
-                self.fftSize = fftSize
-                self.binCount = fftSize / 2
-                self.dbMagnitudes = UnsafeMutablePointer<Float>.allocate(capacity: binCount)
-        }
-        
-        deinit {
-                dbMagnitudes.deallocate()
-        }
-        
-        func updateStatsAndSuppress(magnitudes: UnsafeMutablePointer<Float>,
-                                    mean: UnsafeMutablePointer<Float>,
-                                    variance: UnsafeMutablePointer<Float>,
-                                    count: Int) {
-                let alpha: Float = 0.8
-                let oneMinusAlpha = 1 - alpha
-                
-                var meanVar: Float = 0
-                var maxVar: Float = 0
-                
-                // Step 1: Convert magnitude to dB and update running mean/variance
+enum SmoothingFunctions {
+        @inline(__always)
+        static func exponentialSmooth(_ current: UnsafeMutablePointer<Float>,
+                                      _ target: UnsafePointer<Float>,
+                                      _ count: Int,
+                                      _ alpha: Float) {
+                let beta = 1.0 - alpha
                 for i in 0..<count {
-                        let mag = max(magnitudes[i], 1e-10)
-                        let db = 20 * log10(mag)
-                        dbMagnitudes[i] = db
-                        
-                        let currentMean = mean[i]
-                        let delta = db - currentMean
-                        mean[i] = alpha * currentMean + oneMinusAlpha * db
-                        variance[i] = alpha * variance[i] + oneMinusAlpha * delta * delta
-                }
-                
-                // Step 2: Compute mean and max of variance
-                for i in 0..<count {
-                        meanVar += variance[i]
-                        if variance[i] > maxVar {
-                                maxVar = variance[i]
-                        }
-                }
-                meanVar /= Float(count)
-                
-                // Step 3: Compute standard deviation of variance
-                var sumSqDiff: Float = 0
-                for i in 0..<count {
-                        let diff = variance[i] - meanVar
-                        sumSqDiff += diff * diff
-                }
-                let stdVar = sqrt(sumSqDiff / Float(count))
-                let threshold = meanVar + 0.10 * stdVar
-                
-                // Step 4: Apply suppression
-                for i in 0..<count {
-                        let currentVariance = variance[i]
-                        var suppress: Float = 1.0
-                        
-                        if currentVariance > threshold {
-                                let denom = maxVar - threshold + 1e-5
-                                let ratio = (currentVariance - threshold) / denom
-                                suppress = max(0.0, 1.0 - ratio)
-                        }
-                        
-                        magnitudes[i] *= suppress
+                        current[i] = current[i] * alpha + target[i] * beta
                 }
         }
 }
 
-// MARK: - HPS Processor
-// MARK: - HPS Processor
-final class HPSProcessor {
-        private let maxHarmonics: Int
-        private let workspace: UnsafeMutablePointer<Float>
-        
-        init(spectrumSize: Int, maxHarmonics: Int = 5) {
-                self.maxHarmonics = maxHarmonics
-                self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
-        }
-        
-        deinit {
-                workspace.deallocate()
-        }
-        
-        func findFundamental(magnitudes: UnsafePointer<Float>,
-                             count: Int,
-                             sampleRate: Float) -> Float {
-                // Copy input to workspace
-                memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
-                
-                // Multiply downsampled harmonics
-                for h in 2...maxHarmonics {
-                        for i in 0..<(count / h) {
-                                workspace[i] *= magnitudes[i * h]
-                        }
-                }
-                
-                // Find peak
-                var maxValue: Float = 0
-                var maxIndex: vDSP_Length = 0
-                vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(count / maxHarmonics))
-                
-                return Float(maxIndex) * sampleRate / Float(count * 2)
-        }
-}
+// MARK: - Spectrum Analyzer
 
-final class WeightedHPSProcessor {
-        private let harmonicWeights: [Float]
-        private let workspace: UnsafeMutablePointer<Float>
-        
-        init(spectrumSize: Int, timbre: TimbreType) {
-                self.harmonicWeights = timbre.harmonicProfile
-                self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
-        }
-        
-        func findFundamental(magnitudes: UnsafePointer<Float>, count: Int, sampleRate: Float) -> Float {
-                memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
-                
-                for (h, weight) in harmonicWeights.enumerated().dropFirst() {
-                        let harmonic = h + 1
-                        for i in 0..<(count / harmonic) {
-                                workspace[i] *= pow(magnitudes[i * harmonic], weight)
-                        }
-                }
-                
-                var maxValue: Float = 0
-                var maxIndex: vDSP_Length = 0
-                vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(count / harmonicWeights.count))
-                return Float(maxIndex) * sampleRate / Float(count * 2)
-        }
-}
-
-enum TimbreType {
-        case principal
-        
-        var harmonicProfile: [Float] {
-                switch self {
-                case .principal: return [1.0, 0.8, 0.6, 0.4, 0.2]
-                        
-                }
-        }
-}
-
-// MARK: - Spectrum Analyzer (replaces pipeline)
 final class SpectrumAnalyzer {
-        private let config: Config
-        private let windowProcessor: WindowProcessor
-        private let fftProcessor: FFTProcessor
-        private let magnitudeProcessor: MagnitudeProcessor
-        private let frequencyMapper: FrequencyMapper
-        private let statsSuppressor: StatsSuppressor?
+        // Configuration
+        private let config: AnalyzerConfig
         
-        private let study: Study
-        private var studyCompletion: ((StudyResult) -> Void)?
+        // Derived values
+        private let halfSize: Int
         
-        private var frameTimes: [TimeInterval] = []
-        private let maxSamples = 30
-        private var lastProcessTime: TimeInterval = CACurrentMediaTime()
+        // FFT Setup
+        private let fftSetup: vDSP.FFT<DSPSplitComplex>
         
-        init(config: Config) {
+        // Pre-computed data
+        private let window: ContiguousArray<Float>
+        private let binMap: [Int]  // For log frequency mapping
+        
+        // All working buffers
+        private let windowedBuffer: UnsafeMutableBufferPointer<Float>
+        private let fftReal: UnsafeMutableBufferPointer<Float>
+        private let fftImag: UnsafeMutableBufferPointer<Float>
+        private let magnitude: UnsafeMutableBufferPointer<Float>
+        private let mappedBins: UnsafeMutableBufferPointer<Float>
+        private let smoothedOutput: UnsafeMutableBufferPointer<Float>
+        
+        // Thread safety for data export
+        private let dataLock = NSLock()
+        
+        init(config: AnalyzerConfig = .default) {
                 self.config = config
-                self.study = Study(config: config)
-                self.windowProcessor = WindowProcessor(type: .blackmanHarris, size: config.fftSize)
-                self.fftProcessor = FFTProcessor(size: config.fftSize)
-                self.magnitudeProcessor = MagnitudeProcessor()
-                self.frequencyMapper = FrequencyMapper(config: config)
+                self.halfSize = config.fft.size / 2
                 
-                // Optional stats suppressor
-                if config.enableStatsSuppression {
-                        self.statsSuppressor = StatsSuppressor(fftSize: config.fftSize)
-                } else {
-                        self.statsSuppressor = nil
+                // Create FFT setup
+                let log2n = vDSP_Length(log2(Float(config.fft.size)))
+                guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {
+                        fatalError("Failed to create FFT setup")
                 }
-        }
-        // In SpectrumAnalyzer
-        func dispatchStudy(pool: MemoryPool, completion: @escaping (StudyResult) -> Void) {
-                // Get FFT complex output
-                let realPtr = pool.fftReal.pointer(in: pool)
-                let imagPtr = pool.fftImag.pointer(in: pool)
-                let fftCount = config.fftSize / 2
+                self.fftSetup = setup
                 
-                // Get unwindowed time-domain data from circular buffer
-                let timePtr = pool.windowWorkspace.pointer(in: pool)
+                // Pre-compute window
+                self.window = WindowFunctions.createBlackmanHarris(size: config.fft.size)
                 
-                // Copy to arrays
-                let fftReal = Array(UnsafeBufferPointer(start: realPtr, count: fftCount))
-                let fftImag = Array(UnsafeBufferPointer(start: imagPtr, count: fftCount))
-                let timeDomain = Array(UnsafeBufferPointer(start: timePtr, count: config.fftSize))
-                
-                // Dispatch study with raw data
-                study.performStudy(
-                        fftReal: fftReal,
-                        fftImag: fftImag,
-                        timeDomain: timeDomain,
-                        sampleRate: Float(config.sampleRate),
-                        completion: completion
-                )
-        }
-        
-        
-        func analyze(pool: MemoryPool) {
-                let currentTime = CACurrentMediaTime()
-                let deltaTime = currentTime - lastProcessTime
-                lastProcessTime = currentTime
-                
-                // Track frame rate
-                if deltaTime > 0.001 && deltaTime < 1.0 {
-                        frameTimes.append(deltaTime)
-                        if frameTimes.count > maxSamples {
-                                frameTimes.removeFirst()
+                // Pre-compute bin mapping for log frequency
+                if config.rendering.useLogFrequencyScale {
+                        let nyquist = config.audio.nyquistFrequency
+                        let freqResolution = config.fft.frequencyResolution
+                        let logMin = log10(config.rendering.minFrequency)
+                        let logMax = log10(min(config.rendering.maxFrequency, nyquist))
+                        let halfSize = self.halfSize
+                        self.binMap = (0..<config.fft.outputBinCount).map { i in
+                                let logFreq = logMin + (logMax - logMin) * Double(i) / Double(config.fft.outputBinCount - 1)
+                                let freq = pow(10, logFreq)
+                                let binIndex = Int(freq / freqResolution)
+                                return min(binIndex, halfSize - 1)
                         }
-                        
-                        let averageDelta = frameTimes.reduce(0, +) / Double(frameTimes.count)
-                        let averageFPS = 1.0 / averageDelta
-                        print(String(format: "Average frame rate: %.2f FPS", averageFPS))
+                } else {
+                        self.binMap = Array(0..<min(config.fft.outputBinCount, halfSize))
                 }
                 
-                // Get pointers to all buffers we'll use
-                let windowInput = pool.windowWorkspace.pointer(in: pool)
-                let fftReal = pool.fftReal.pointer(in: pool)
-                let fftImag = pool.fftImag.pointer(in: pool)
-                let magnitude = pool.magnitude.pointer(in: pool)
-                let displayTarget = pool.displayTarget.pointer(in: pool)
+                // Allocate all working buffers
+                let windowedPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.size)
+                let realPtr = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                let imagPtr = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                let magPtr = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                let mappedPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
+                let smoothPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
                 
-                // Step 1: Apply window (in-place)
-                windowProcessor.applyWindow(
-                        input: windowInput,
-                        output: windowInput,
-                        count: config.fftSize
-                )
+                self.windowedBuffer = UnsafeMutableBufferPointer(start: windowedPtr, count: config.fft.size)
+                self.fftReal = UnsafeMutableBufferPointer(start: realPtr, count: halfSize)
+                self.fftImag = UnsafeMutableBufferPointer(start: imagPtr, count: halfSize)
+                self.magnitude = UnsafeMutableBufferPointer(start: magPtr, count: halfSize)
+                self.mappedBins = UnsafeMutableBufferPointer(start: mappedPtr, count: config.fft.outputBinCount)
+                self.smoothedOutput = UnsafeMutableBufferPointer(start: smoothPtr, count: config.fft.outputBinCount)
                 
-                // Step 2: Perform FFT
-                fftProcessor.forward(
-                        input: windowInput,
-                        realOutput: fftReal,
-                        imagOutput: fftImag
-                )
+                // Initialize buffers
+                windowedBuffer.initialize(repeating: 0)
+                fftReal.initialize(repeating: 0)
+                fftImag.initialize(repeating: 0)
+                magnitude.initialize(repeating: -80.0)  // Start at minimum dB
+                mappedBins.initialize(repeating: -80.0)
+                smoothedOutput.initialize(repeating: -80.0)
+        }
+        
+        deinit {
+                windowedBuffer.deallocate()
+                fftReal.deallocate()
+                fftImag.deallocate()
+                magnitude.deallocate()
+                mappedBins.deallocate()
+                smoothedOutput.deallocate()
+        }
+        
+        @inline(__always)
+        func process(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
+                // Get base pointers
+                let windowedPtr = windowedBuffer.baseAddress!
+                let realPtr = fftReal.baseAddress!
+                let imagPtr = fftImag.baseAddress!
+                let magPtr = magnitude.baseAddress!
+                let mappedPtr = mappedBins.baseAddress!
+                let smoothPtr = smoothedOutput.baseAddress!
                 
-                // Step 3: Compute magnitudes
-                magnitudeProcessor.computeMagnitudes(
-                        real: fftReal,
-                        imag: fftImag,
-                        output: magnitude,
-                        count: config.fftSize / 2,
-                        convertToDb: true
-                )
-                
-                // Step 4: Optional stats-based suppression
-                if let suppressor = statsSuppressor {
-                        let statsMean = pool.fftStatsMean.pointer(in: pool)
-                        let statsVar = pool.fftStatsVar.pointer(in: pool)
-                        
-                        suppressor.updateStatsAndSuppress(
-                                magnitudes: magnitude,
-                                mean: statsMean,
-                                variance: statsVar,
-                                count: config.fftSize / 2
-                        )
+                // Step 1: Copy input and apply window
+                memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
+                window.withUnsafeBufferPointer { windowPtr in
+                        WindowFunctions.applyBlackmanHarris(windowedPtr, windowPtr.baseAddress!, config.fft.size)
                 }
                 
-                // Step 5: Map to output bins
-                frequencyMapper.mapBins(
-                        input: magnitude,
-                        output: displayTarget,
-                        inputCount: config.fftSize / 2,
-                        outputCount: config.outputBinCount
+                // Step 2: Pack for FFT
+                FFTFunctions.packRealInput(windowedPtr, realPtr, imagPtr, halfSize)
+                
+                // Step 3: Perform FFT
+                var splitComplex = DSPSplitComplex(realp: realPtr, imagp: imagPtr)
+                fftSetup.forward(input: splitComplex, output: &splitComplex)
+                
+                // Step 4: Compute magnitudes in dB
+                MagnitudeFunctions.computeMagnitudesDB(realPtr, imagPtr, magPtr, halfSize)
+                
+                // Step 5: Map to output bins (linear or log)
+                for i in 0..<config.fft.outputBinCount {
+                        mappedPtr[i] = magPtr[binMap[i]]
+                }
+                
+                // Step 6: Apply smoothing
+                SmoothingFunctions.exponentialSmooth(smoothPtr, mappedPtr,
+                                                     config.fft.outputBinCount,
+                                                     config.rendering.smoothingFactor)
+                
+                // Step 7: Copy to output
+                memcpy(output, smoothPtr, config.fft.outputBinCount * MemoryLayout<Float>.size)
+        }
+        
+        // MARK: - Data Export for Study
+        
+        struct StudyData {
+                let fftReal: [Float]
+                let fftImag: [Float]
+                let timeDomain: [Float]
+                let magnitudeSpectrum: [Float]
+                let sampleRate: Float
+                let timestamp: TimeInterval
+        }
+        
+        /// Safely capture current analysis data for external study processing
+        func captureStudyData() -> StudyData {
+                dataLock.lock()
+                defer { dataLock.unlock() }
+                
+                // Create copies of the current data
+                let realCopy = Array(fftReal)
+                let imagCopy = Array(fftImag)
+                let timeCopy = Array(windowedBuffer)  // This has the windowed data
+                let magCopy = Array(magnitude)
+                
+                return StudyData(
+                        fftReal: realCopy,
+                        fftImag: imagCopy,
+                        timeDomain: timeCopy,
+                        magnitudeSpectrum: magCopy,
+                        sampleRate: Float(config.audio.sampleRate),
+                        timestamp: CACurrentMediaTime()
                 )
         }
-}
-
-enum Smoothing {
-        static func apply(current: UnsafeMutablePointer<Float>,
-                          target: UnsafePointer<Float>,
-                          count: Int,
-                          smoothingFactor alpha: Float) {
-                for i in 0..<count {
-                        current[i] = (current[i] * (alpha)) + (target[i] * (1-alpha))
-                }
+        
+        /// Get current configuration
+        var configuration: AnalyzerConfig {
+                return config
+        }
+        
+        /// Get computed values for external use
+        var computedValues: (fftSize: Int, halfSize: Int, outputBinCount: Int, binMapping: [Int]) {
+                return (config.fft.size, halfSize, config.fft.outputBinCount, binMap)
         }
 }

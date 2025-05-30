@@ -1,45 +1,71 @@
 import Foundation
-struct Config {
-        let sampleRate: Double = 44100
-        let fftSize: Int = 8192 * 1 // Keep large for accuracy
-        let outputBinCount: Int = 512
+
+struct AnalyzerConfig {
         
-        var hopSize: Int {
-                return 512  // ~86 windows per second, plenty for 60 FPS
+        // MARK: - Audio capture
+        struct Audio {
+                let sampleRate: Double       = 44_100
+                let nyquistMultiplier: Double = 0.5     // mostly for clarity
+                
+                var nyquistFrequency: Double { sampleRate * nyquistMultiplier }
         }
         
-        let frameInterval: TimeInterval = 1.0 / 60.0  // 60 FPS target
-        let smoothingFactor: Float = 0.1
-        let useLogFrequencyScale: Bool = true
-        let minFrequency: Double = 20.0
-        let maxFrequency: Double = 20000.0
-        let enableStatsSuppression: Bool = false
-        
-        let frameRate: Double = 60
-        
-        // Computed properties
-        var nyquistFrequency: Double {
-                return sampleRate / 2.0
+        // MARK: - FFT / STFT
+        struct FFT {
+                let size: Int                = 8_192
+                let outputBinCount: Int      = 512
+                let hopSize: Int             = 512                    // ≈ 86 windows/s
+                var frequencyResolution: Double {
+                        Audio().sampleRate / Double(size)
+                }
+                var circularBufferSize: Int { size * 3 }
         }
         
-        var frequencyResolution: Double {
-                return sampleRate / Double(fftSize)
+        // MARK: - Real-time rendering
+        struct Rendering {
+                let targetFPS: Double = 60
+                var frameInterval: TimeInterval { 1.0 / targetFPS }
+                
+                let smoothingFactor: Float        = 0.1
+                let useLogFrequencyScale: Bool    = true
+                let minFrequency: Double          = 20
+                let maxFrequency: Double          = 20_000
         }
         
-        var circularBufferSize: Int {
-                // Need at least fftSize + maxExpectedAudioBuffer
-                // Add extra for timing margin
-                return fftSize * 3
+        // MARK: - Spectral peak detection
+        struct PeakDetection {
+                var minProminence: Float  = 6.0   // dB
+                var minDistance: Int      = 5     // bins
+                var minHeight: Float      = -60.0 // dBFS
+                var prominenceWindow: Int = 50    // bins
         }
         
-        var totalMemorySize: Int {
-                circularBufferSize +    // Circular buffer
-                fftSize +              // Window workspace
-                fftSize / 2 +          // FFT real part
-                fftSize / 2 +          // FFT imaginary part
-                fftSize / 2 +          // Magnitude output
-                outputBinCount * 2 +    // Display buffer (current + previous for smoothing)
-                fftSize / 2 +
-                fftSize / 2
+        // MARK: - Noise-floor estimation
+        struct NoiseFloor {
+                var method: Study.NoiseFloorMethod = .whittaker
+                var thresholdOffset: Float = 0.0      // dB above fitted floor
+                
+                // Quantile regression
+                var quantile: Float        = 0.1
+                
+                // Huber loss
+                var huberDelta: Float      = 1.0
+                var huberAsymmetry: Float  = 2.0
+                
+                // Common smoothing
+                var smoothingSigma: Float  = 1.0
+                
+                // Whittaker smoother
+                var whittakerLambda: Float = 1_000.0
+                var whittakerOrder: Int    = 2
         }
+        
+        // MARK: - Members & defaults
+        var audio         = Audio()
+        var fft           = FFT()
+        var rendering     = Rendering()
+        var peakDetection = PeakDetection()
+        var noiseFloor    = NoiseFloor()
+        
+        static let `default` = AnalyzerConfig()
 }

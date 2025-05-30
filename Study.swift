@@ -4,12 +4,20 @@ import CoreML
 
 // Add to Study.swift
 
-struct PeakDetectionConfig {
-        var minProminence: Float = 6.0      // dB above surrounding
-        var minDistance: Int = 5            // bins between peaks
-        var minHeight: Float = -60.0        // absolute dB threshold
-        var prominenceWindow: Int = 50      // bins to search for bases
-}
+// MARK: - Study Protocol (placeholder for your actual Study implementation)
+//struct StudyResult {
+//        let fundamental: Float
+//        let harmonics: [Float]
+//        // ... other results
+//}
+//
+//enum Study {
+//        static func perform(data: SpectrumAnalyzer.StudyData, config: AnalyzerConfig) -> StudyResult {
+//                // This would be your actual study implementation
+//                return StudyResult(fundamental: 440.0, harmonics: [])
+//        }
+//}
+
 
 // Update StudyResult to include peaks
 struct StudyResult {
@@ -31,25 +39,6 @@ struct Peak {
 }
 
 // MARK: - Study Object
-struct NoiseFloorConfig {
-        var method: Study.NoiseFloorMethod = .whittaker
-        var thresholdOffset: Float = 0.0  // dB above fitted floor
-        
-        // Quantile Regression
-        var quantile: Float = 0.1
-        
-        // Huber Loss
-        var huberDelta: Float = 1.0
-        var huberAsymmetry: Float = 2.0
-        
-        // Common smoothing
-        var smoothingSigma: Float = 1.0
-        
-        // Whittaker Smoother
-        var whittakerLambda: Float = 1000.0   // Controls smoothing strength
-        var whittakerOrder: Int = 2           // Usually 2 (second derivative penalty)
-}
-
 final class Study {
         private let config: Config
         private let noiseConfig: NoiseFloorConfig

@@ -13,25 +13,28 @@ final class AudioProcessor: ObservableObject {
         private let engine = AVAudioEngine()
         private let playerNode = AVAudioPlayerNode()
         
-        // Processing state
-        private var lastProcessTime: TimeInterval = 0
-        private let processLock = NSLock()
+        // Counters
+        private var fftCount: Int = 0
+        private var fftCounterTimer: Timer?
+        private var renderCount: Int = 0
+        private var renderCounterTimer: Timer?
+        
+        // Thread safety
+        private let processLock = NSLock()  // This was missing - you had 'lock' but used 'processLock'
         
         // Display update timer
-        private var displayTimer: Timer?
+        private var displayTimer: Timer?  // This was missing
+        
+        // Raw spectrum buffer (unsmoothed FFT output)
+        private let rawSpectrumBuffer: UnsafeMutableBufferPointer<Float>
         
         // Working buffer for window extraction
         private let windowBuffer: UnsafeMutableBufferPointer<Float>
         
-        // Output buffer for spectrum data
-        private let outputBuffer: UnsafeMutableBufferPointer<Float>
-        
-        // Published data
+        // Published data (smoothed for display)
         @Published var spectrumData: [Float] = []
         @Published var studyResult: StudyResult?
-        
         @Published var studyInProgress = false
-        
         
         init(config: AnalyzerConfig = .default) {
                 self.config = config
@@ -42,8 +45,9 @@ final class AudioProcessor: ObservableObject {
                 let windowPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.size)
                 self.windowBuffer = UnsafeMutableBufferPointer(start: windowPtr, count: config.fft.size)
                 
-                let outputPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
-                self.outputBuffer = UnsafeMutableBufferPointer(start: outputPtr, count: config.fft.outputBinCount)
+                let rawPtr = UnsafeMutablePointer<Float>.allocate(capacity: config.fft.outputBinCount)
+                self.rawSpectrumBuffer = UnsafeMutableBufferPointer(start: rawPtr, count: config.fft.outputBinCount)
+                rawSpectrumBuffer.initialize(repeating: -80.0)
                 
                 // Initialize published data
                 self.spectrumData = Array(repeating: -80, count: config.fft.outputBinCount)
@@ -52,8 +56,8 @@ final class AudioProcessor: ObservableObject {
         }
         
         deinit {
+                rawSpectrumBuffer.deallocate()
                 windowBuffer.deallocate()
-                outputBuffer.deallocate()
         }
         
         private func configureAudioSession() {
@@ -82,7 +86,19 @@ final class AudioProcessor: ObservableObject {
                         self?.handleAudioBuffer(buffer)
                 }
                 
-                // Start display update timer
+                // Start FFT counter timer
+                fftCounterTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                        print("FFTs per second: \(self?.fftCount ?? 0)")
+                        self?.fftCount = 0
+                }
+                
+                // Start render counter timer
+                renderCounterTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                        print("Frames rendered per second: \(self?.renderCount ?? 0)")
+                        self?.renderCount = 0
+                }
+                
+                // Start display update timer (60 Hz)
                 displayTimer = Timer.scheduledTimer(withTimeInterval: config.rendering.frameInterval, repeats: true) { [weak self] _ in
                         self?.updateDisplay()
                 }
@@ -106,6 +122,8 @@ final class AudioProcessor: ObservableObject {
         func stop() {
                 displayTimer?.invalidate()
                 displayTimer = nil
+                fftCounterTimer?.invalidate()
+                renderCounterTimer?.invalidate()
                 playerNode.stop()
                 engine.mainMixerNode.removeTap(onBus: 0)
                 engine.stop()
@@ -118,12 +136,8 @@ final class AudioProcessor: ObservableObject {
                 // Write to circular buffer
                 circularBuffer.write(channelData, count: frameLength)
                 
-                // Process if we have enough data and enough time has passed
-                let now = CACurrentMediaTime()
-                //if now - lastProcessTime >= config.rendering.frameInterval {
-                        processAudio()
-                        lastProcessTime = now
-                //}
+                // Process audio immediately
+                processAudio()
         }
         
         private func processAudio() {
@@ -140,18 +154,35 @@ final class AudioProcessor: ObservableObject {
                         to: windowBuffer.baseAddress!
                 )
                 
-                // Process the window
-                analyzer.process(windowBuffer.baseAddress!, output: outputBuffer.baseAddress!)
+                // Process the window WITHOUT smoothing - output goes to rawSpectrumBuffer
+                analyzer.processWithoutSmoothing(windowBuffer.baseAddress!, output: rawSpectrumBuffer.baseAddress!)
+                
+                // Increment FFT counter
+                fftCount += 1
                 
                 // Advance by hop size
                 circularBuffer.advance(by: config.fft.hopSize)
         }
         
         @objc private func updateDisplay() {
-                // The analyzer already applies smoothing internally, so we just need to copy the output
+                // Apply EMA smoothing ONLY here at render time
+                processLock.lock()
+                let rawData = Array(rawSpectrumBuffer)  // Copy current raw spectrum
+                processLock.unlock()
+                
+                // Apply smoothing between current spectrumData and new raw data
+                var smoothed = spectrumData  // Start with current smoothed values
+                let alpha = config.rendering.smoothingFactor
+                let beta = 1.0 - alpha
+                
+                for i in 0..<smoothed.count {
+                        smoothed[i] = smoothed[i] * alpha + rawData[i] * beta
+                }
+                
+                // Update published data on main thread
                 DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.spectrumData = Array(self.outputBuffer)
+                        self?.spectrumData = smoothed
+                        self?.renderCount += 1
                 }
         }
         
@@ -164,7 +195,6 @@ final class AudioProcessor: ObservableObject {
                 
                 // Process study on background queue
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                        // Assuming Study is defined elsewhere and has a method like this:
                         let result = Study.perform(
                                 data: studyData,
                                 config: self?.config ?? .default

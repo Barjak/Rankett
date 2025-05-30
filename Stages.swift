@@ -133,24 +133,23 @@ final class SpectrumAnalyzer {
         }
         
         @inline(__always)
-        func process(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
+        func processWithoutSmoothing(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
                 // Get base pointers
                 let windowedPtr = windowedBuffer.baseAddress!
                 let realPtr = fftReal.baseAddress!
                 let imagPtr = fftImag.baseAddress!
                 let magPtr = magnitude.baseAddress!
-                let mappedPtr = mappedBins.baseAddress!
-                let smoothPtr = smoothedOutput.baseAddress!
                 
                 // Step 1: Copy input and apply window
-                memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
-                window.withUnsafeBufferPointer { windowPtr in
-                        WindowFunctions.applyBlackmanHarris(windowedPtr, windowPtr.baseAddress!, config.fft.size)
-                }
+//                memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
+//                window.withUnsafeBufferPointer { windowPtr in
+//                        WindowFunctions.applyBlackmanHarris(windowedPtr, windowPtr.baseAddress!, config.fft.size)
+//                }
                 
                 // Step 2: Pack for FFT
-                FFTFunctions.packRealInput(windowedPtr, realPtr, imagPtr, halfSize)
-                
+//                FFTFunctions.packRealInput(windowedPtr, realPtr, imagPtr, halfSize)
+                FFTFunctions.packRealInput(input, realPtr, imagPtr, halfSize)
+
                 // Step 3: Perform FFT
                 var splitComplex = DSPSplitComplex(realp: realPtr, imagp: imagPtr)
                 fftSetup.forward(input: splitComplex, output: &splitComplex)
@@ -158,18 +157,10 @@ final class SpectrumAnalyzer {
                 // Step 4: Compute magnitudes in dB
                 MagnitudeFunctions.computeMagnitudesDB(realPtr, imagPtr, magPtr, halfSize)
                 
-                // Step 5: Map to output bins (linear or log)
+                // Step 5: Map to output bins (linear or log) - NO SMOOTHING
                 for i in 0..<config.fft.outputBinCount {
-                        mappedPtr[i] = magPtr[binMap[i]]
+                        output[i] = magPtr[binMap[i]]
                 }
-                
-                // Step 6: Apply smoothing
-                SmoothingFunctions.exponentialSmooth(smoothPtr, mappedPtr,
-                                                     config.fft.outputBinCount,
-                                                     config.rendering.smoothingFactor)
-                
-                // Step 7: Copy to output
-                memcpy(output, smoothPtr, config.fft.outputBinCount * MemoryLayout<Float>.size)
         }
         
         // MARK: - Data Export for Study

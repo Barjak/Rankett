@@ -1,5 +1,21 @@
 import Foundation
 
+enum NoiseFloorMethod {
+        case quantileRegression
+        case huberAsymmetric
+        case parametric1OverF
+        case whittaker
+}
+
+
+struct LayoutParameters {
+        var spectrumHeightFraction: CGFloat = 0.40
+        var studyHeightFraction: CGFloat    = 0.40
+        var maxPanelHeight: CGFloat?        = nil      // e.g. 420 to clamp on iPad
+        // add more UI knobs here as needed (button sizes, corner radii, etc.)
+}
+
+
 struct AnalyzerConfig {
         
         // MARK: - Audio capture
@@ -41,15 +57,10 @@ struct AnalyzerConfig {
         }
         
         // MARK: - Noise-floor estimation
-        enum Method {
-                case quantileRegression
-                case huberAsymmetric
-                case parametric1OverF
-                case whittaker
-        }
+
         
         struct NoiseFloor {
-                var method: Study.NoiseFloorMethod = .whittaker
+                var method: NoiseFloorMethod = .whittaker
                 var thresholdOffset: Float = 0.0      // dB above fitted floor
                 
                 // Quantile regression

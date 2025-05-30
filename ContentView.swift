@@ -11,164 +11,82 @@ extension EnvironmentValues {
         }
 }
 
+// TODO: Fully REWRITE ContentView this to use the LayoutParameters (which can be found int ./Config.swift)
+// TODO: Update SpectrumView and StudyView to handle reactive sizes appropriately. Should be minimum viable/reasonable change.
+
 struct ContentView: View {
         @StateObject private var audioProcessor: AudioProcessor
         @State private var isProcessing = false
-        @State private var layoutParams = LayoutParameters()
         
         init() {
-                let config = AnalyzerConfig.default
+                let config = Config()
                 _audioProcessor = StateObject(wrappedValue: AudioProcessor(config: config))
         }
         
-        var body: some View {
-                GeometryReader { geometry in
-                        VStack(spacing: 20) {
-                                // MARK: - Spectrum View
-                                SpectrumView(
-                                        spectrumData: audioProcessor.spectrumData,
-                                        config: audioProcessor.configuration
-                                )
-                                .background(Color.black)
-                                .cornerRadius(12)
-                                .shadow(radius: 4)
-                                .frame(
-                                        maxWidth: .infinity,
-                                        maxHeight: calculateHeight(
-                                                for: layoutParams.spectrumHeightFraction,
-                                                in: geometry.size.height,
-                                                maxHeight: layoutParams.maxPanelHeight
-                                        )
-                                )
-                                .layoutPriority(1)
-                                
-                                // MARK: - Study View
-                                if let studyResult = audioProcessor.studyResult {
-                                        StudyView(studyResult: studyResult)
-                                                .background(Color.black)
-                                                .cornerRadius(12)
-                                                .shadow(radius: 4)
-                                                .frame(
-                                                        maxWidth: .infinity,
-                                                        maxHeight: calculateHeight(
-                                                                for: layoutParams.studyHeightFraction,
-                                                                in: geometry.size.height,
-                                                                maxHeight: layoutParams.maxPanelHeight
-                                                        )
-                                                )
-                                                .layoutPriority(1)
-                                } else {
-                                        // Placeholder when no study result
-                                        RoundedRectangle(cornerRadius: 12)
-                                                .fill(Color.black.opacity(0.3))
-                                                .overlay(
-                                                        Text("Tap 'Analyze Spectrum' to see results")
-                                                                .foregroundColor(.secondary)
-                                                )
-                                                .frame(
-                                                        maxWidth: .infinity,
-                                                        maxHeight: calculateHeight(
-                                                                for: layoutParams.studyHeightFraction,
-                                                                in: geometry.size.height,
-                                                                maxHeight: layoutParams.maxPanelHeight
-                                                        )
-                                                )
-                                                .layoutPriority(1)
-                                }
-                                
-                                // MARK: - Control Buttons
-                                HStack(spacing: 16) {
-                                        Button("Analyze Spectrum") {
-                                                audioProcessor.triggerStudy()
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .disabled(!isProcessing)
+        import SwiftUI
+        
+        struct ContentView: View {
+                @StateObject private var audio = AudioProcessor(config: Config())
+                @State private var isProcessing = false
+                
+                var body: some View {
+                        GeometryReader { geo in                    // ① own the full window
+                                VStack(spacing: 20) {
                                         
-                                        Button {
-                                                toggleProcessing()
-                                        } label: {
-                                                Label(
-                                                        isProcessing ? "Stop" : "Start",
-                                                        systemImage: isProcessing ? "stop.circle.fill" : "play.circle.fill"
-                                                )
+                                        // MARK: – Expanding spectrum plot
+                                        SpectrumView(spectrumData: audio.spectrumData,
+                                                     config: Config())
+                                        .background(Color.black)
+                                        .cornerRadius(12)
+                                        .shadow(radius: 4)
+                                        .frame(maxWidth: .infinity,    // ② take as much width as allowed
+                                               maxHeight: geo.size.height * 0.40,
+                                               alignment: .top)        //   40 % of the window height
+                                        .layoutPriority(1)             // ← grabs space before buttons
+                                        
+                                        // MARK: – Expanding study plot
+                                        StudySection(study: audio.studyResult)
+                                                .frame(maxWidth: .infinity,
+                                                       maxHeight: geo.size.height * 0.25)
+                                                .layoutPriority(1)
+                                        
+                                        // MARK: – Fixed-size buttons
+                                        HStack(spacing: 16) {
+                                                Button("Analyze Spectrum") {
+                                                        audio.triggerStudy()
+                                                }
+                                                .buttonStyle(.borderedProminent)
+                                                
+                                                Button {
+                                                        toggleProcessing()
+                                                } label: {
+                                                        Label(isProcessing ? "Stop" : "Start",
+                                                              systemImage: isProcessing ? "stop.circle.fill"
+                                                              : "play.circle.fill")
+                                                }
+                                                .buttonStyle(.bordered)
                                         }
-                                        .buttonStyle(.bordered)
+                                        .font(.body)                       // stays readable on all devices
+                                        .frame(maxHeight: 44)              // ③ keeps touch-target height
                                 }
-                                .font(.body)
-                                .frame(maxHeight: 44)
-                                
-                                Spacer()
+                                .padding(.horizontal)                  // safe-area aware
+                                .frame(maxWidth: .infinity,            // centers content on Mac/iPad
+                                       maxHeight: .infinity,
+                                       alignment: .top)
                         }
-                        .padding()
-                        .environment(\.layoutParameters, layoutParams)
-                        .environment(\.drawingArea, geometry.size)
+                        .onAppear { startProcessing() }
+                        .onDisappear { audio.stop() }
+                        .navigationTitle("Spectrum Analyzer")      // nice on iPad/Mac
                 }
-                .preferredColorScheme(.dark)
-                .onAppear {
-                        setupLayoutParameters()
-                        if !isProcessing {
-                                startProcessing()
-                        }
+                
+                // MARK: – Control helpers
+                private func toggleProcessing() {
+                        isProcessing ? audio.stop() : startProcessing()
+                        isProcessing.toggle()
                 }
-                .onDisappear {
-                        audioProcessor.stop()
+                private func startProcessing() {
+                        audio.start()
+                        isProcessing = true
                 }
-                .navigationTitle("Spectrum Analyzer")
-#if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-#endif
         }
-        
-        // MARK: - Helper Methods
-        
-        private func calculateHeight(for fraction: CGFloat, in totalHeight: CGFloat, maxHeight: CGFloat?) -> CGFloat {
-                let calculatedHeight = totalHeight * fraction
-                if let max = maxHeight {
-                        return min(calculatedHeight, max)
-                }
-                return calculatedHeight
-        }
-        
-        private func setupLayoutParameters() {
-#if os(iOS)
-                if UIDevice.current.userInterfaceIdiom == .pad {
-                        // iPad specific settings
-                        layoutParams.maxPanelHeight = 420
-                        layoutParams.spectrumHeightFraction = 0.35
-                        layoutParams.studyHeightFraction = 0.35
-                } else {
-                        // iPhone settings
-                        layoutParams.maxPanelHeight = nil
-                        layoutParams.spectrumHeightFraction = 0.40
-                        layoutParams.studyHeightFraction = 0.40
-                }
-#else
-                // macOS settings
-                layoutParams.maxPanelHeight = 500
-                layoutParams.spectrumHeightFraction = 0.40
-                layoutParams.studyHeightFraction = 0.40
-#endif
-        }
-        
-        private func toggleProcessing() {
-                if isProcessing {
-                        audioProcessor.stop()
-                } else {
-                        startProcessing()
-                }
-                isProcessing.toggle()
-        }
-        
-        private func startProcessing() {
-                audioProcessor.start()
-                isProcessing = true
-        }
-}
 
-// MARK: - Preview
-
-struct ContentView_Previews: PreviewProvider {
-        static var previews: some View {
-                ContentView()
-        }
-}

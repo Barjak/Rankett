@@ -42,7 +42,7 @@ struct AnalyzerConfig {
                 let targetFPS: Double = 60
                 var frameInterval: TimeInterval { 1.0 / targetFPS }
                 
-                let smoothingFactor: Float        = 0.5
+                let smoothingFactor: Float        = 0.3
                 let useLogFrequencyScale: Bool    = true
                 let minFrequency: Double          = 20
                 let maxFrequency: Double          = 20_000

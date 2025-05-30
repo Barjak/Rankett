@@ -133,7 +133,7 @@ final class SpectrumAnalyzer {
         }
         
         @inline(__always)
-        func processWithoutSmoothing(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
+        func process(_ input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>) {
                 // Get base pointers
                 let windowedPtr = windowedBuffer.baseAddress!
                 let realPtr = fftReal.baseAddress!
@@ -158,7 +158,7 @@ final class SpectrumAnalyzer {
                 // Step 4: Compute magnitudes in dB
                 MagnitudeFunctions.computeMagnitudesDB(realPtr, imagPtr, magPtr, halfSize)
                 
-                // Step 5: Map to output bins (linear or log) - NO SMOOTHING
+                // Step 5: Map to output bins
                 let freqRes = Float(config.fft.frequencyResolution)
                 let minLog  = log10(config.rendering.minFrequency)
                 let maxLog  = log10(min(config.rendering.maxFrequency,

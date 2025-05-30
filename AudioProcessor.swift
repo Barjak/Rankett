@@ -155,7 +155,7 @@ final class AudioProcessor: ObservableObject {
                 )
                 
                 // Process the window WITHOUT smoothing - output goes to rawSpectrumBuffer
-                analyzer.processWithoutSmoothing(windowBuffer.baseAddress!, output: rawSpectrumBuffer.baseAddress!)
+                analyzer.process(windowBuffer.baseAddress!, output: rawSpectrumBuffer.baseAddress!)
                 
                 // Increment FFT counter
                 fftCount += 1

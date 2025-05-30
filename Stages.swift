@@ -141,14 +141,15 @@ final class SpectrumAnalyzer {
                 let magPtr = magnitude.baseAddress!
                 
                 // Step 1: Copy input and apply window
-//                memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
-//                window.withUnsafeBufferPointer { windowPtr in
-//                        WindowFunctions.applyBlackmanHarris(windowedPtr, windowPtr.baseAddress!, config.fft.size)
-//                }
+                memcpy(windowedPtr, input, config.fft.size * MemoryLayout<Float>.size)
+                window.withUnsafeBufferPointer { windowPtr in
+                        WindowFunctions.applyBlackmanHarris(windowedPtr, windowPtr.baseAddress!, config.fft.size)
+                }
                 
-                // Step 2: Pack for FFT
-//                FFTFunctions.packRealInput(windowedPtr, realPtr, imagPtr, halfSize)
-                FFTFunctions.packRealInput(input, realPtr, imagPtr, halfSize)
+//                 Step 2: Pack for FFT
+                FFTFunctions.packRealInput(windowedPtr, realPtr, imagPtr, halfSize)
+//                FFTFunctions.packRealInput(input, realPtr, imagPtr, halfSize)
+                // WHY? If you comment out the windowing and just pass the input instead of windowedPtr, then the jumping goes away.
 
                 // Step 3: Perform FFT
                 var splitComplex = DSPSplitComplex(realp: realPtr, imagp: imagPtr)
@@ -158,8 +159,40 @@ final class SpectrumAnalyzer {
                 MagnitudeFunctions.computeMagnitudesDB(realPtr, imagPtr, magPtr, halfSize)
                 
                 // Step 5: Map to output bins (linear or log) - NO SMOOTHING
-                for i in 0..<config.fft.outputBinCount {
-                        output[i] = magPtr[binMap[i]]
+                let freqRes = Float(config.fft.frequencyResolution)
+                let minLog  = log10(config.rendering.minFrequency)
+                let maxLog  = log10(min(config.rendering.maxFrequency,
+                                        config.audio.nyquistFrequency))
+                let Nout    = config.fft.outputBinCount
+                let α       = config.rendering.smoothingFactor
+                
+                for i in 0..<Nout {
+                        // a) compute fractional bin index
+                        let binF: Float
+                        if config.rendering.useLogFrequencyScale {
+                                let t = Float(i) / Float(Nout - 1)
+                                let logf = minLog + (maxLog - minLog) * Double(t)
+                                let f    = Float(pow(10, logf))
+                                binF = f / freqRes
+                        } else {
+                                binF = Float(i) * Float(halfSize - 1) / Float(Nout - 1)
+                        }
+                        
+                        // b) linear interpolate between floor(binF) and ceil(binF)
+                        let lo   = Int(floor(binF))
+                        let hi   = min(lo + 1, halfSize - 1)
+                        let frac = binF - Float(lo)
+                        let magL = magPtr[lo]
+                        let magH = magPtr[hi]
+                        let interp = (1 - frac) * magL + frac * magH
+                        
+                        // c) exponential smoothing
+                        let prev = output[i]
+                        let sm   = α * interp + (1 - α) * prev
+                        output[i] = sm
+                        
+                        // output
+                        output[i] = sm
                 }
         }
         

@@ -30,7 +30,7 @@ struct AnalyzerConfig {
         struct FFT {
                 let size: Int                = 8192
                 let outputBinCount: Int      = 512
-                let hopSize: Int             = 512 * 2                    // ≈ 86 windows/s
+                let hopSize: Int             = 512 * 8                    // ≈ 86 windows/s
                 var frequencyResolution: Double {
                         Audio().sampleRate / Double(size)
                 }

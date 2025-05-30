@@ -5,6 +5,7 @@ final class CircularBuffer {
         private let buffer: UnsafeMutableBufferPointer<Float>
         private let capacity: Int
         private var writeIndex = 0
+        private var readIndex = 0  // Add explicit read index
         private var availableSamples = 0
         private let lock = NSLock()
         
@@ -23,18 +24,26 @@ final class CircularBuffer {
                 lock.lock()
                 defer { lock.unlock() }
                 
-                let toWrite = min(count, capacity)
-                if count > toWrite {
-                        print("Warning: Dropping \(count - toWrite) samples")
+                // Check if we're about to overwrite unread data
+                let spaceAvailable = capacity - availableSamples
+                if count > spaceAvailable {
+                        print("Warning: Buffer overflow! Dropping \(count - spaceAvailable) samples")
+                        // Advance read index to make room
+                        let toDrop = count - spaceAvailable
+                        readIndex = (readIndex + toDrop) % capacity
+                        availableSamples -= toDrop
                 }
                 
                 let ptr = buffer.baseAddress!
-                let first = min(toWrite, capacity - writeIndex)
-                let second = toWrite - first
+                let toWrite = min(count, capacity)
                 
-                memcpy(ptr.advanced(by: writeIndex), samples, first * MemoryLayout<Float>.size)
-                if second > 0 {
-                        memcpy(ptr, samples.advanced(by: first), second * MemoryLayout<Float>.size)
+                // Write in up to two chunks (before and after wrap)
+                let firstChunkSize = min(toWrite, capacity - writeIndex)
+                memcpy(ptr.advanced(by: writeIndex), samples, firstChunkSize * MemoryLayout<Float>.size)
+                
+                if toWrite > firstChunkSize {
+                        let secondChunkSize = toWrite - firstChunkSize
+                        memcpy(ptr, samples.advanced(by: firstChunkSize), secondChunkSize * MemoryLayout<Float>.size)
                 }
                 
                 writeIndex = (writeIndex + toWrite) % capacity
@@ -43,7 +52,7 @@ final class CircularBuffer {
         
         func canExtractWindow(of size: Int, at offset: Int = 0) -> Bool {
                 lock.lock()
-                defer { lock.unlock() }
+                defer { lock.unlock()  }
                 return availableSamples >= size + offset
         }
         
@@ -52,16 +61,22 @@ final class CircularBuffer {
                 lock.lock()
                 defer { lock.unlock() }
                 
-                guard availableSamples >= size + offset else { return false }
+                guard availableSamples >= size + offset else {
+                        print("Warning: Not enough samples. Requested: \(size + offset), available: \(availableSamples)")
+                        return false
+                }
                 
                 let ptr = buffer.baseAddress!
-                let start = (writeIndex - availableSamples + offset + capacity) % capacity
-                let first = min(size, capacity - start)
-                let second = size - first
+                // Calculate actual read position with offset
+                let readPos = (readIndex + offset) % capacity
                 
-                memcpy(destination, ptr.advanced(by: start), first * MemoryLayout<Float>.size)
-                if second > 0 {
-                        memcpy(destination.advanced(by: first), ptr, second * MemoryLayout<Float>.size)
+                // Read in up to two chunks (before and after wrap)
+                let firstChunkSize = min(size, capacity - readPos)
+                memcpy(destination, ptr.advanced(by: readPos), firstChunkSize * MemoryLayout<Float>.size)
+                
+                if size > firstChunkSize {
+                        let secondChunkSize = size - firstChunkSize
+                        memcpy(destination.advanced(by: firstChunkSize), ptr, secondChunkSize * MemoryLayout<Float>.size)
                 }
                 
                 return true
@@ -71,6 +86,20 @@ final class CircularBuffer {
                 guard samples > 0 else { return }
                 lock.lock()
                 defer { lock.unlock() }
-                availableSamples = max(0, availableSamples - samples)
+                
+                let toAdvance = min(samples, availableSamples)
+                readIndex = (readIndex + toAdvance) % capacity
+                availableSamples -= toAdvance
+                
+                if toAdvance < samples {
+                        print("Warning: Tried to advance by \(samples) but only \(toAdvance) samples available")
+                }
+        }
+        
+        // Debug helper
+        var debugInfo: String {
+                lock.lock()
+                defer { lock.unlock() }
+                return "CircularBuffer: writeIndex=\(writeIndex), readIndex=\(readIndex), available=\(availableSamples), capacity=\(capacity)"
         }
 }

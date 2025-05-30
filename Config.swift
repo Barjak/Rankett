@@ -41,6 +41,13 @@ struct AnalyzerConfig {
         }
         
         // MARK: - Noise-floor estimation
+        enum Method {
+                case quantileRegression
+                case huberAsymmetric
+                case parametric1OverF
+                case whittaker
+        }
+        
         struct NoiseFloor {
                 var method: Study.NoiseFloorMethod = .whittaker
                 var thresholdOffset: Float = 0.0      // dB above fitted floor
@@ -59,7 +66,7 @@ struct AnalyzerConfig {
                 var whittakerLambda: Float = 1_000.0
                 var whittakerOrder: Int    = 2
         }
-        
+
         // MARK: - Members & defaults
         var audio         = Audio()
         var fft           = FFT()

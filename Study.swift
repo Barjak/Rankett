@@ -2,31 +2,25 @@ import Foundation
 import Accelerate
 import CoreML
 
-// Add to Study.swift
+import Foundation
+import Accelerate
+import CoreML
 
-// MARK: - Study Protocol (placeholder for your actual Study implementation)
-//struct StudyResult {
-//        let fundamental: Float
-//        let harmonics: [Float]
-//        // ... other results
-//}
-//
-//enum Study {
-//        static func perform(data: SpectrumAnalyzer.StudyData, config: AnalyzerConfig) -> StudyResult {
-//                // This would be your actual study implementation
-//                return StudyResult(fundamental: 440.0, harmonics: [])
-//        }
-//}
+// MARK: - Result Types
 
-
-// Update StudyResult to include peaks
 struct StudyResult {
         let originalSpectrum: [Float]
         let noiseFloor: [Float]
         let denoisedSpectrum: [Float]
         let frequencies: [Float]
-        let peaks: [Peak]  // Add this
+        let peaks: [Peak]
         let timestamp: Date
+        
+        // Additional analysis results
+        let fundamental: Float?
+        let harmonics: [Float]
+        let spectralCentroid: Float
+        let spectralFlux: Float
 }
 
 struct Peak {
@@ -38,209 +32,219 @@ struct Peak {
         let rightBase: Int
 }
 
-// MARK: - Study Object
-final class Study {
-        private let config: Config
-        private let noiseConfig: NoiseFloorConfig
+// MARK: - Study Analysis Functions
+
+enum Study {
         
-        init(config: Config, noiseConfig: NoiseFloorConfig = NoiseFloorConfig()) {
-                self.config = config
-                self.noiseConfig = noiseConfig
+        // MARK: - Main Entry Point
+        
+        /// Perform comprehensive spectral analysis
+        /// This is now a pure function - no async, no dispatch queues
+        static func perform(data: SpectrumAnalyzer.StudyData, config: AnalyzerConfig) -> StudyResult {
+                
+                // Compute magnitudes from FFT data
+                let magnitudes = computeMagnitudes(real: data.fftReal, imag: data.fftImag)
+                
+                // Generate frequency array
+                let frequencies = generateFrequencyArray(
+                        count: magnitudes.count,
+                        sampleRate: data.sampleRate
+                )
+                
+                // Fit noise floor using configured method
+                let noiseFloor = fitNoiseFloor(
+                        magnitudes: magnitudes,
+                        frequencies: frequencies,
+                        config: config.noiseFloor
+                )
+                
+                // Denoise spectrum
+                let denoised = denoiseSpectrum(
+                        magnitudes: magnitudes,
+                        noiseFloor: noiseFloor
+                )
+                
+                // Find peaks
+                let peaks = findPeaks(
+                        in: denoised,
+                        frequencies: frequencies,
+                        config: config.peakDetection
+                )
+                
+                // Find fundamental frequency
+                let fundamental = findFundamental(
+                        magnitudes: magnitudes,
+                        sampleRate: data.sampleRate
+                )
+                
+                // Find harmonics
+                let harmonics = findHarmonics(
+                        magnitudes: magnitudes,
+                        fundamental: fundamental,
+                        sampleRate: data.sampleRate
+                )
+                
+                // Compute spectral features
+                let centroid = computeSpectralCentroid(
+                        magnitudes: magnitudes,
+                        frequencies: frequencies
+                )
+                
+                let flux = computeSpectralFlux(
+                        current: magnitudes,
+                        previous: nil  // Would need previous frame in real implementation
+                )
+                
+                return StudyResult(
+                        originalSpectrum: magnitudes,
+                        noiseFloor: noiseFloor,
+                        denoisedSpectrum: denoised,
+                        frequencies: frequencies,
+                        peaks: peaks,
+                        timestamp: Date(timeIntervalSince1970: data.timestamp),
+                        fundamental: fundamental,
+                        harmonics: harmonics,
+                        spectralCentroid: centroid,
+                        spectralFlux: flux
+                )
         }
         
-        private let queue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
-        // Quantile regression parameters
-        private let maxIterations = 10
-        private let convergenceThreshold: Float = 1e-4
+        // MARK: - Fit Noise Floor
         
-        // Threshold adjustment - how many dB above the fitted noise floor
-        
-        // Method selection
-        enum NoiseFloorMethod {
-                case quantileRegression
-                case huberAsymmetric
-                case parametric1OverF
-                case whittaker
-        }
-        
-        private let method: NoiseFloorMethod = .quantileRegression  // Change this to try different methods
-        
-        
-        private let peakConfig = PeakDetectionConfig()
-        
-        // Update performStudy to include peak detection
-        func performStudy(fftReal: [Float],
-                          fftImag: [Float],
-                          timeDomain: [Float],
-                          sampleRate: Float,
-                          completion: @escaping (StudyResult) -> Void) {
-                queue.async { [weak self] in
-                        guard let self = self else { return }
-                        
-                        // Compute magnitudes
-                        let magnitudes = zip(fftReal, fftImag).map { sqrt($0*$0 + $1*$1) }
-                        
-                        // Generate frequencies
-                        let frequencies = self.generateFrequencyArray(count: magnitudes.count)
-                        
-                        
-                        // Fit noise floor using selected method
-                        var noiseFloor: [Float]
-                        switch self.method {
-                        case .quantileRegression:
-                                noiseFloor = self.fitNoiseFloorQuantile(magnitudes: magnitudes)
-                        case .huberAsymmetric:
-                                noiseFloor = self.fitNoiseFloorHuber(magnitudes: magnitudes)
-                        case .parametric1OverF:
-                                noiseFloor = self.fitNoiseFloorParametric(magnitudes: magnitudes, frequencies: frequencies)
-                        case .whittaker:
-                                noiseFloor = self.fitNoiseFloorWhittaker(magnitudes: magnitudes)
-                        }
-                        
-                        // Apply threshold offset - raise the floor by N dB
-                        noiseFloor = noiseFloor.map { $0 + self.noiseConfig.thresholdOffset }
-                        
-                        let denoised = self.denoiseSpectrum(magnitudes: magnitudes, noiseFloor: noiseFloor)
-                        // Find peaks in the denoised spectrum
-                        let peaks = self.findPeaks(in: magnitudes, frequencies: frequencies)
-                        
-                        let result = StudyResult(
-                                originalSpectrum: magnitudes,
-                                noiseFloor: noiseFloor,
-                                denoisedSpectrum: denoised,
-                                frequencies: frequencies,
-                                peaks: peaks,
-                                timestamp: Date()
+        static func fitNoiseFloor(magnitudes: [Float],
+                                  frequencies: [Float],
+                                  config: AnalyzerConfig.NoiseFloor) -> [Float] {
+                
+                var noiseFloor: [Float]
+                
+                switch config.method {
+                case .quantileRegression:
+                        noiseFloor = fitNoiseFloorQuantile(
+                                magnitudes: magnitudes,
+                                quantile: config.quantile,
+                                smoothingSigma: config.smoothingSigma
                         )
                         
-                        DispatchQueue.main.async {
-                                completion(result)
-                        }
+                case .huberAsymmetric:
+                        noiseFloor = fitNoiseFloorHuber(
+                                magnitudes: magnitudes,
+                                delta: config.huberDelta,
+                                asymmetry: config.huberAsymmetry,
+                                smoothingSigma: config.smoothingSigma
+                        )
+                        
+                case .parametric1OverF:
+                        noiseFloor = fitNoiseFloorParametric(
+                                magnitudes: magnitudes,
+                                frequencies: frequencies
+                        )
+                        
+                case .whittaker:
+                        noiseFloor = fitNoiseFloorWhittaker(
+                                magnitudes: magnitudes,
+                                lambda: config.whittakerLambda,
+                                order: config.whittakerOrder
+                        )
                 }
+                
+                // Apply threshold offset
+                return noiseFloor.map { $0 + config.thresholdOffset }
         }
         
-        private func fitNoiseFloorWhittaker(magnitudes: [Float]) -> [Float] {
-                let lambda = noiseConfig.whittakerLambda
-                guard let smoothed = whittakerSmooth(signal: magnitudes, lambda: lambda) else {
-                        return magnitudes
-                }
-                
-                let offset = noiseConfig.thresholdOffset
-                let adjusted = smoothed.map { $0 + offset }
-                
-                return adjusted.enumerated().map { min($0.element, magnitudes[$0.offset]) } // clamp to original
-        }
-        private func calculateProminence(at peakIndex: Int, in spectrum: [Float], window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
-                let peakHeight = spectrum[peakIndex]
-                let start = max(0, peakIndex - window)
-                let end = min(spectrum.count - 1, peakIndex + window)
-                
-                // Find lowest points on each side
-                var leftMin = peakHeight
-                var leftMinIndex = peakIndex
-                for i in stride(from: peakIndex - 1, through: start, by: -1) {
-                        if spectrum[i] < leftMin {
-                                leftMin = spectrum[i]
-                                leftMinIndex = i
-                        }
-                        if spectrum[i] > peakHeight { break }  // Higher peak found
-                }
-                
-                var rightMin = peakHeight
-                var rightMinIndex = peakIndex
-                for i in stride(from: peakIndex + 1, through: end, by: 1) {
-                        if spectrum[i] < rightMin {
-                                rightMin = spectrum[i]
-                                rightMinIndex = i
-                        }
-                        if spectrum[i] > peakHeight { break }  // Higher peak found
-                }
-                
-                let prominence = peakHeight - max(leftMin, rightMin)
-                return (prominence, leftMinIndex, rightMinIndex)
-        }
-        
-        private func filterByDistance(_ peaks: [Peak], minDistance: Int) -> [Peak] {
-                guard !peaks.isEmpty else { return [] }
-                
-                // Sort by magnitude (keep highest peaks when too close)
-                let sorted = peaks.sorted { $0.magnitude > $1.magnitude }
-                var kept: [Peak] = []
-                
-                for peak in sorted {
-                        let tooClose = kept.contains { abs($0.index - peak.index) < minDistance }
-                        if !tooClose {
-                                kept.append(peak)
-                        }
-                }
-                
-                return kept.sorted { $0.index < $1.index }
-        }
-        private func findPeaks(in spectrum: [Float], frequencies: [Float]) -> [Peak] {
-                var peaks: [Peak] = []
-                
-                // Find local maxima
-                for i in 1..<(spectrum.count - 1) {
-                        if spectrum[i] > spectrum[i-1] && spectrum[i] > spectrum[i+1] && spectrum[i] > peakConfig.minHeight {
-                                // Calculate prominence
-                                let (prominence, leftBase, rightBase) = calculateProminence(
-                                        at: i,
-                                        in: spectrum,
-                                        window: peakConfig.prominenceWindow
-                                )
-                                
-                                if prominence >= peakConfig.minProminence {
-                                        peaks.append(Peak(
-                                                index: i,
-                                                frequency: frequencies[i],
-                                                magnitude: spectrum[i],
-                                                prominence: prominence,
-                                                leftBase: leftBase,
-                                                rightBase: rightBase
-                                        ))
-                                }
-                        }
-                }
-                
-                // Filter by minimum distance
-                peaks = filterByDistance(peaks, minDistance: peakConfig.minDistance)
-                
-                return peaks
-        }
-        // MARK: - Method 1: Quantile Regression (original)
-        private func fitNoiseFloorQuantile(magnitudes: [Float]) -> [Float] {
+        // MARK: - Fit Noise Floor Quantile
+        static func fitNoiseFloorQuantile(magnitudes: [Float],
+                                          quantile: Float,
+                                          smoothingSigma: Float) -> [Float] {
                 let count = magnitudes.count
                 var noiseFloor = [Float](repeating: 0, count: count)
                 
+                // Constants for convergence
+                let maxIterations = 10
+                let convergenceThreshold: Float = 1e-4
+                
+                // Initialize with moving minimum
                 noiseFloor = movingMinimum(magnitudes, windowSize: 20)
                 
+                // Iterative quantile regression
                 for _ in 0..<maxIterations {
                         let previousFloor = noiseFloor
                         noiseFloor = quantileRegressionStep(
                                 data: magnitudes,
                                 current: noiseFloor,
-                                quantile: noiseConfig.quantile,
-                                lambda: noiseConfig.smoothingSigma
+                                quantile: quantile,
+                                lambda: smoothingSigma
                         )
                         
+                        // Check convergence
                         let change = zip(noiseFloor, previousFloor).map { abs($0 - $1) }.max() ?? 0
                         if change < convergenceThreshold {
                                 break
                         }
                 }
                 
+                // Final smoothing
                 noiseFloor = gaussianSmooth(noiseFloor, sigma: 2.0)
                 return noiseFloor
         }
         
-        // MARK: - Method 2: Huber Loss with Asymmetric Weighting
-        private func fitNoiseFloorHuber(magnitudes: [Float]) -> [Float] {
+        // MARK: - Quantile Regression Step
+        
+        private static func quantileRegressionStep(data: [Float],
+                                                   current: [Float],
+                                                   quantile: Float,
+                                                   lambda: Float) -> [Float] {
+                let count = data.count
+                var result = [Float](repeating: 0, count: count)
+                
+                // Compute subgradients for quantile loss
+                for i in 0..<count {
+                        let residual = data[i] - current[i]
+                        let subgradient: Float
+                        
+                        if residual > 0 {
+                                subgradient = quantile
+                        } else if residual < 0 {
+                                subgradient = quantile - 1
+                        } else {
+                                subgradient = 0
+                        }
+                        
+                        // Update with gradient descent step
+                        result[i] = current[i] + 0.1 * subgradient
+                }
+                
+                // Apply total variation regularization
+                for _ in 0..<3 {  // Inner iterations for TV
+                        var tvResult = result
+                        for i in 1..<(count-1) {
+                                let diff1 = result[i] - result[i-1]
+                                let diff2 = result[i+1] - result[i]
+                                let tvGrad = sign(diff1) - sign(diff2)
+                                tvResult[i] = result[i] - lambda * tvGrad
+                        }
+                        result = tvResult
+                }
+                
+                // Ensure noise floor doesn't exceed data
+                for i in 0..<count {
+                        result[i] = min(result[i], data[i])
+                }
+                
+                return result
+        }
+        
+        // MARK: Fit Noise Floor Huber
+        
+        static func fitNoiseFloorHuber(magnitudes: [Float],
+                                       delta: Float,
+                                       asymmetry: Float,
+                                       smoothingSigma: Float) -> [Float] {
                 let count = magnitudes.count
                 var noiseFloor = movingMinimum(magnitudes, windowSize: 20)
                 
-                let huberDelta: Float = 1.0  // Threshold for Huber loss
-                let alpha: Float = 2.0  // Asymmetry parameter
+                // Constants
+                let maxIterations = 10
                 
                 for iteration in 0..<maxIterations {
                         var gradient = [Float](repeating: 0, count: count)
@@ -250,14 +254,14 @@ final class Study {
                                 let residual = magnitudes[i] - noiseFloor[i]
                                 
                                 // Asymmetric weight - penalize positive errors more
-                                let weight = residual > 0 ? exp(-alpha * residual) : 1.0
+                                let weight = residual > 0 ? exp(-asymmetry * residual) : 1.0
                                 
                                 // Huber loss gradient
                                 let grad: Float
-                                if abs(residual) <= huberDelta {
+                                if abs(residual) <= delta {
                                         grad = residual * weight
                                 } else {
-                                        grad = huberDelta * sign(residual) * weight
+                                        grad = delta * sign(residual) * weight
                                 }
                                 
                                 gradient[i] = grad
@@ -270,7 +274,7 @@ final class Study {
                         }
                         
                         // Apply smoothness constraint
-                        noiseFloor = gaussianSmooth(noiseFloor, sigma: 1.0)
+                        noiseFloor = gaussianSmooth(noiseFloor, sigma: smoothingSigma)
                         
                         // Ensure floor doesn't exceed data
                         for i in 0..<count {
@@ -281,8 +285,10 @@ final class Study {
                 return noiseFloor
         }
         
-        // MARK: - Method 3: Parametric 1/f Model
-        private func fitNoiseFloorParametric(magnitudes: [Float], frequencies: [Float]) -> [Float] {
+        // MARK: - Fit Noise Floor Parametric
+        
+        static func fitNoiseFloorParametric(magnitudes: [Float],
+                                            frequencies: [Float]) -> [Float] {
                 let count = magnitudes.count
                 
                 // Model: f(x) = a/x + b + c*log(x)
@@ -353,10 +359,37 @@ final class Study {
                 return noiseFloor
         }
         
-        // MARK: - Whittaker Smoother
-        private func whittakerSmooth(signal: [Float], lambda: Float) -> [Float]? {
+        // MARK: Fit Noise Floor Whittaker
+        
+        static func fitNoiseFloorWhittaker(magnitudes: [Float],
+                                           lambda: Float,
+                                           order: Int) -> [Float] {
+                guard let smoothed = whittakerSmooth(
+                        signal: magnitudes,
+                        lambda: lambda,
+                        order: order
+                ) else {
+                        return magnitudes
+                }
+                
+                // Clamp to original signal
+                return zip(smoothed, magnitudes).map { min($0, $1) }
+        }
+        
+        // MARK: (Whittaker Helper)
+        
+        private static func whittakerSmooth(signal: [Float],
+                                            lambda: Float,
+                                            order: Int) -> [Float]? {
                 let n = signal.count
-                guard n >= 3 else { return signal }
+                guard n >= order + 1 else { return signal }
+                
+                // For now, implement second-order difference (order = 2)
+                // Can be extended to support arbitrary order
+                guard order == 2 else {
+                        print("Only second-order Whittaker smoothing implemented")
+                        return nil
+                }
                 
                 // Construct second difference matrix D (size: (n-2) x n)
                 var D = [Float](repeating: 0.0, count: (n - 2) * n)
@@ -370,9 +403,10 @@ final class Study {
                 var DT_D = [Float](repeating: 0.0, count: n * n)
                 vDSP_mmul(D, 1, D, 1, &DT_D, 1, vDSP_Length(n), vDSP_Length(n), vDSP_Length(n - 2))
                 
-                // Add lambda * Dᵀ * D to identity matrix
+                // Add identity matrix: (I + lambda * Dᵀ * D)
                 for i in 0..<n {
-                        DT_D[i * n + i] += lambda
+                        DT_D[i * n + i] += 1.0
+                        DT_D[i * n + i] *= (1.0 + lambda)
                 }
                 
                 // Solve linear system (I + lambda DᵀD) * y = x
@@ -391,52 +425,145 @@ final class Study {
         }
         
         
-        // MARK: - Quantile Regression Step
-        private func quantileRegressionStep(data: [Float], current: [Float], quantile: Float, lambda: Float) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
+        
+        
+        
+        // MARK: - Find Peaks
+        static func findPeaks(in spectrum: [Float],
+                              frequencies: [Float],
+                              config: AnalyzerConfig.PeakDetection) -> [Peak] {
+                var peaks: [Peak] = []
                 
-                // Compute subgradients for quantile loss
-                for i in 0..<count {
-                        let residual = data[i] - current[i]
-                        let subgradient: Float
-                        
-                        if residual > 0 {
-                                subgradient = quantile
-                        } else if residual < 0 {
-                                subgradient = quantile - 1
-                        } else {
-                                subgradient = 0
+                // Find local maxima
+                for i in 1..<(spectrum.count - 1) {
+                        if spectrum[i] > spectrum[i-1] &&
+                                spectrum[i] > spectrum[i+1] &&
+                                spectrum[i] > config.minHeight {
+                                
+                                // Calculate prominence
+                                let (prominence, leftBase, rightBase) = calculateProminence(
+                                        at: i,
+                                        in: spectrum,
+                                        window: config.prominenceWindow
+                                )
+                                
+                                if prominence >= config.minProminence {
+                                        peaks.append(Peak(
+                                                index: i,
+                                                frequency: frequencies[i],
+                                                magnitude: spectrum[i],
+                                                prominence: prominence,
+                                                leftBase: leftBase,
+                                                rightBase: rightBase
+                                        ))
+                                }
                         }
-                        
-                        // Update with gradient descent step
-                        result[i] = current[i] + 0.1 * subgradient
                 }
                 
-                // Apply total variation regularization
-                for _ in 0..<3 {  // Inner iterations for TV
-                        var tvResult = result
-                        for i in 1..<(count-1) {
-                                let diff1 = result[i] - result[i-1]
-                                let diff2 = result[i+1] - result[i]
-                                let tvGrad = sign(diff1) - sign(diff2)
-                                tvResult[i] = result[i] - lambda * tvGrad
+                // Filter by minimum distance
+                peaks = filterByDistance(peaks, minDistance: config.minDistance)
+                
+                return peaks
+        }
+        // MARK: (Calculate Prominence)
+        static func calculateProminence(at peakIndex: Int,
+                                        in spectrum: [Float],
+                                        window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
+                let peakHeight = spectrum[peakIndex]
+                let start = max(0, peakIndex - window)
+                let end = min(spectrum.count - 1, peakIndex + window)
+                
+                // Find lowest points on each side
+                var leftMin = peakHeight
+                var leftMinIndex = peakIndex
+                for i in stride(from: peakIndex - 1, through: start, by: -1) {
+                        if spectrum[i] < leftMin {
+                                leftMin = spectrum[i]
+                                leftMinIndex = i
                         }
-                        result = tvResult
+                        if spectrum[i] > peakHeight { break }  // Higher peak found
                 }
                 
-                // Ensure noise floor doesn't exceed data
-                for i in 0..<count {
-                        result[i] = min(result[i], data[i])
+                var rightMin = peakHeight
+                var rightMinIndex = peakIndex
+                for i in stride(from: peakIndex + 1, through: end, by: 1) {
+                        if spectrum[i] < rightMin {
+                                rightMin = spectrum[i]
+                                rightMinIndex = i
+                        }
+                        if spectrum[i] > peakHeight { break }  // Higher peak found
                 }
                 
-                return result
+                let prominence = peakHeight - max(leftMin, rightMin)
+                return (prominence, leftMinIndex, rightMinIndex)
+        }
+        // MARK: (Filter By Distance)
+        static func filterByDistance(_ peaks: [Peak], minDistance: Int) -> [Peak] {
+                guard !peaks.isEmpty else { return [] }
+                
+                // Sort by magnitude (keep highest peaks when too close)
+                let sorted = peaks.sorted { $0.magnitude > $1.magnitude }
+                var kept: [Peak] = []
+                
+                for peak in sorted {
+                        let tooClose = kept.contains { abs($0.index - peak.index) < minDistance }
+                        if !tooClose {
+                                kept.append(peak)
+                        }
+                }
+                
+                return kept.sorted { $0.index < $1.index }
         }
         
         
         
+        // MARK: - Find Fundamental
+        
+        static func findFundamental(magnitudes: [Float], sampleRate: Float) -> Float? {
+                // TODO: Implement HPS or other fundamental detection
+                return nil
+        }
+        // MARK: - Find Harmonics
+        static func findHarmonics(magnitudes: [Float],
+                                  fundamental: Float?,
+                                  sampleRate: Float) -> [Float] {
+                // TODO: Implement harmonic analysis
+                return []
+        }
+        
+        // MARK: - Compute Spectral Centroid
+        
+        static func computeSpectralCentroid(magnitudes: [Float],
+                                            frequencies: [Float]) -> Float {
+                var weightedSum: Float = 0
+                var magnitudeSum: Float = 0
+                
+                for (mag, freq) in zip(magnitudes, frequencies) {
+                        weightedSum += freq * mag
+                        magnitudeSum += mag
+                }
+                
+                return magnitudeSum > 0 ? weightedSum / magnitudeSum : 0
+        }
+        // MARK: - Compute Spectral Flux
+        static func computeSpectralFlux(current: [Float], previous: [Float]?) -> Float {
+                guard let previous = previous else { return 0 }
+                
+                var flux: Float = 0
+                for (curr, prev) in zip(current, previous) {
+                        let diff = curr - prev
+                        if diff > 0 {
+                                flux += diff
+                        }
+                }
+                
+                return flux
+        }
+        
+        
         // MARK: - Denoising
-        private func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {
+        
+        static func denoiseSpectrum(magnitudes: [Float], noiseFloor: [Float]) -> [Float] {
                 let count = magnitudes.count
                 var denoised = [Float](repeating: -80, count: count)
                 
@@ -454,12 +581,8 @@ final class Study {
         }
         
         // MARK: - Helper Functions
-        private func generateFrequencyArray(count: Int) -> [Float] {
-                let binWidth = Float(config.sampleRate) / Float(config.fftSize)
-                return (0..<count).map { Float($0) * binWidth }
-        }
         
-        private func movingMinimum(_ data: [Float], windowSize: Int) -> [Float] {
+        static func movingMinimum(_ data: [Float], windowSize: Int) -> [Float] {
                 let count = data.count
                 var result = [Float](repeating: 0, count: count)
                 
@@ -472,7 +595,7 @@ final class Study {
                 return result
         }
         
-        private func gaussianSmooth(_ data: [Float], sigma: Float) -> [Float] {
+        static func gaussianSmooth(_ data: [Float], sigma: Float) -> [Float] {
                 let kernelSize = Int(ceil(sigma * 3)) * 2 + 1
                 let kernel = gaussianKernel(size: kernelSize, sigma: sigma)
                 
@@ -497,7 +620,7 @@ final class Study {
                 return result
         }
         
-        private func gaussianKernel(size: Int, sigma: Float) -> [Float] {
+        private static func gaussianKernel(size: Int, sigma: Float) -> [Float] {
                 let center = Float(size / 2)
                 let twoSigmaSquared = 2 * sigma * sigma
                 
@@ -518,9 +641,23 @@ final class Study {
                 return kernel
         }
         
-        private func sign(_ x: Float) -> Float {
-                if x > 0 { return 1 }
-                if x < 0 { return -1 }
-                return 0
+        // MARK: - Compute Magnitudes
+        
+        static func computeMagnitudes(real: [Float], imag: [Float]) -> [Float] {
+                return zip(real, imag).map { sqrt($0 * $0 + $1 * $1) }
         }
+        // MARK: - Generate Frequency Array
+        static func generateFrequencyArray(count: Int, sampleRate: Float) -> [Float] {
+                let binWidth = sampleRate / Float(count * 2)  // count is half FFT size
+                return (0..<count).map { Float($0) * binWidth }
+        }
+        
+        // MARK: - (Sign)
+        
+        private static func sign(_ x: Float) -> Float {
+                if x > 0 { return 1 }
+                else if x < 0 { return -1 }
+                else { return 0 }
+        }
+        
 }

@@ -92,8 +92,8 @@ enum Study {
                 // Find peaks in the denoised spectrum
                 let peaksStartTime = CFAbsoluteTimeGetCurrent()
                 let peaks = findPeaks(
-                        in: mappedDenoised,
-                        frequencies: binFrequencies,
+                        in: denoisedFull,
+                        frequencies: fullFrequencies,
                         config: config.peakDetection
                 )
                 let peaksTime = (CFAbsoluteTimeGetCurrent() - peaksStartTime) * 1000

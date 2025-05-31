@@ -168,9 +168,8 @@ enum Study {
                 var denoised = [Float](repeating: -80, count: count)
                 
                 for i in 0..<count {
-                        // If signal is above noise floor, keep original value
                         if magnitudesDB[i] > noiseFloorDB[i] {
-                                denoised[i] = magnitudesDB[i]
+                                denoised[i] = magnitudesDB[i] - noiseFloorDB[i] - 80
                         } else {
                                 denoised[i] = -80
                         }

@@ -60,18 +60,18 @@ struct AnalyzerConfig {
 
         
         struct NoiseFloor {
-                var method: NoiseFloorMethod = .whittaker
+                var method: NoiseFloorMethod = .quantileRegression
                 var thresholdOffset: Float = 0.0      // dB above fitted floor
                 
                 // Quantile regression
-                var quantile: Float        = 0.1
+                var quantile: Float        = 0.02
                 
                 // Huber loss
                 var huberDelta: Float      = 1.0
                 var huberAsymmetry: Float  = 2.0
                 
                 // Common smoothing
-                var smoothingSigma: Float  = 1.0
+                var smoothingSigma: Float  = 0.1
                 
                 // Whittaker smoother
                 var whittakerLambda: Float = 1_000.0

@@ -305,8 +305,7 @@ extension Study {
                 
                 // Add identity matrix: (I + lambda * Dᵀ * D)
                 for i in 0..<n {
-                        DT_D[i * n + i] += 1.0
-                        DT_D[i * n + i] *= (1.0 + lambda)
+                        DT_D[i * n + i] += lambda
                 }
                 
                 // Solve linear system (I + lambda DᵀD) * y = x

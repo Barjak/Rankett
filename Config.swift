@@ -2,9 +2,9 @@ import Foundation
 
 enum NoiseFloorMethod {
         case quantileRegression
-        case huberAsymmetric
-        case parametric1OverF
-        case whittaker
+//        case huberAsymmetric
+//        case parametric1OverF
+//        case whittaker
 }
 
 
@@ -57,25 +57,13 @@ struct AnalyzerConfig {
         }
         
         // MARK: - Noise-floor estimation
-
-        
         struct NoiseFloor {
                 var method: NoiseFloorMethod = .quantileRegression
                 var thresholdOffset: Float = 0.0      // dB above fitted floor
-                
-                // Quantile regression
-                var quantile: Float        = 0.02
-                
-                // Huber loss
-                var huberDelta: Float      = 1.0
-                var huberAsymmetry: Float  = 2.0
-                
                 // Common smoothing
                 var smoothingSigma: Float  = 0.1
-                
-                // Whittaker smoother
-                var whittakerLambda: Float = 1_000.0
-                var whittakerOrder: Int    = 2
+                // Quantile regression
+                var quantile: Float        = 0.02
         }
 
         // MARK: - Members & defaults

@@ -120,147 +120,16 @@ enum Study {
                 )
         }
         
-                
-        static func computeWeightedHPS(magnitudes: [Float], frequencies: [Float]) -> [Float] {
-                // Mock implementation - replace with real HPS later
-                let count = magnitudes.count
-                var hps = [Float](repeating: 0, count: count)
-                
-                // For now, just create a mock spectrum with peaks at harmonics
-                for i in 0..<count {
-                        let freq = frequencies[i]
-                        // Create mock peaks at 440Hz and harmonics
-                        let fundamental: Float = 440.0
-                        for harmonic in 1...5 {
-                                let harmonicFreq = fundamental * Float(harmonic)
-                                let distance = abs(freq - harmonicFreq)
-                                if distance < 20 {
-                                        let weight = 1.0 / Float(harmonic)
-                                        hps[i] += magnitudes[i] * weight * exp(-distance / 10)
-                                }
-                        }
-                }
-                
-                return hps
-        }
-
-        
-//        // MARK: - Compute Spectral Centroid
-//        
-//        static func computeSpectralCentroid(magnitudes: [Float],
-//                                            frequencies: [Float]) -> Float {
-//                var weightedSum: Float = 0
-//                var magnitudeSum: Float = 0
-//                
-//                for (mag, freq) in zip(magnitudes, frequencies) {
-//                        weightedSum += freq * mag
-//                        magnitudeSum += mag
-//                }
-//                
-//                return magnitudeSum > 0 ? weightedSum / magnitudeSum : 0
+// TODO: Implement this. Magnitude of each overtone is 1/
+//        static func computeWeightedHPS(magnitudes: [Float], frequencies: [Float]) -> [Float] {
+//
 //        }
 
+
         
-        // MARK: - Denoising
-        
-        static func denoiseSpectrum(magnitudesDB: [Float], noiseFloorDB: [Float]) -> [Float] {
-                let count = magnitudesDB.count
-                var denoised = [Float](repeating: -80, count: count)
-                
-                for i in 0..<count {
-                        if magnitudesDB[i] > noiseFloorDB[i] {
-                                denoised[i] = magnitudesDB[i] - noiseFloorDB[i] - 80
-                        } else {
-                                denoised[i] = -80
-                        }
-                }
-                
-                return denoised
-        }
-        
-        // MARK: Moving Minimum
-        
-        static func movingMinimum(_ data: [Float], windowSize: Int) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
-                
-                for i in 0..<count {
-                        let start = max(0, i - windowSize/2)
-                        let end = min(count, i + windowSize/2 + 1)
-                        result[i] = data[start..<end].min() ?? data[i]
-                }
-                
-                return result
-        }
-        // MARK: Gaussian Smooth
-        static func gaussianSmooth(_ data: [Float], sigma: Float) -> [Float] {
-                let kernelSize = Int(ceil(sigma * 3)) * 2 + 1
-                let kernel = gaussianKernel(size: kernelSize, sigma: sigma)
-                
-                var result = [Float](repeating: 0, count: data.count)
-                let halfKernel = kernelSize / 2
-                
-                for i in 0..<data.count {
-                        var sum: Float = 0
-                        var weightSum: Float = 0
-                        
-                        for j in 0..<kernelSize {
-                                let dataIndex = i + j - halfKernel
-                                if dataIndex >= 0 && dataIndex < data.count {
-                                        sum += data[dataIndex] * kernel[j]
-                                        weightSum += kernel[j]
-                                }
-                        }
-                        
-                        result[i] = sum / weightSum
-                }
-                
-                return result
-        }
-        // MARK: (Gaussian Kernel)
-        private static func gaussianKernel(size: Int, sigma: Float) -> [Float] {
-                let center = Float(size / 2)
-                let twoSigmaSquared = 2 * sigma * sigma
-                
-                var kernel = [Float](repeating: 0, count: size)
-                var sum: Float = 0
-                
-                for i in 0..<size {
-                        let x = Float(i) - center
-                        kernel[i] = exp(-(x * x) / twoSigmaSquared)
-                        sum += kernel[i]
-                }
-                
-                // Normalize
-                for i in 0..<size {
-                        kernel[i] /= sum
-                }
-                
-                return kernel
-        }
-        
-        // MARK: - Compute Magnitudes
-        
-        static func computeMagnitudes(real: [Float], imag: [Float]) -> [Float] {
-                return zip(real, imag).map { sqrt($0 * $0 + $1 * $1) }
-        }
         // MARK: - Generate Frequency Array
         static func generateFrequencyArray(count: Int, sampleRate: Float) -> [Float] {
                 let binWidth = sampleRate / Float(count * 2)  // count is half FFT size
                 return (0..<count).map { Float($0) * binWidth }
-        }
-}
-
-
-enum SmoothingFunctions {
-        @inline(__always)
-        static func exponentialSmooth(_ current: UnsafeMutablePointer<Float>,
-                                      _ target: UnsafePointer<Float>,
-                                      _ count: Int,
-                                      _ alpha: Float) {
-                let beta = 1.0 - alpha
-                for i in 0..<count {
-                        current[i] = current[i] * alpha + target[i] * beta
-                }
         }
 }

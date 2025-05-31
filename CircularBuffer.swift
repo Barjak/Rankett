@@ -27,7 +27,7 @@ final class CircularBuffer {
                 // Check if we're about to overwrite unread data
                 let spaceAvailable = capacity - availableSamples
                 if count > spaceAvailable {
-                        print("Warning: Buffer overflow! Dropping \(count - spaceAvailable) samples")
+                        //print("Warning: Buffer overflow! Dropping \(count - spaceAvailable) samples")
                         // Advance read index to make room
                         let toDrop = count - spaceAvailable
                         readIndex = (readIndex + toDrop) % capacity
@@ -97,9 +97,9 @@ final class CircularBuffer {
         }
         
         // Debug helper
-        var debugInfo: String {
-                lock.lock()
-                defer { lock.unlock() }
-                return "CircularBuffer: writeIndex=\(writeIndex), readIndex=\(readIndex), available=\(availableSamples), capacity=\(capacity)"
-        }
+//        var debugInfo: String {
+//                lock.lock()
+//                defer { lock.unlock() }
+//                return "CircularBuffer: writeIndex=\(writeIndex), readIndex=\(readIndex), available=\(availableSamples), capacity=\(capacity)"
+//        }
 }

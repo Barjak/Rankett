@@ -12,7 +12,7 @@ extension Study {
         }
         // MARK: - Fit Noise Floor
         
-        static func fitNoiseFloor(magnitudes: [Float],
+        static func fitNoiseFloor(magnitudesDB: [Float],
                                   frequencies: [Float],
                                   config: AnalyzerConfig.NoiseFloor) -> [Float] {
                 
@@ -21,14 +21,14 @@ extension Study {
                 switch config.method {
                 case .quantileRegression:
                         noiseFloor = fitNoiseFloorQuantile(
-                                magnitudes: magnitudes,
+                                magnitudesDB: magnitudesDB,
                                 quantile: config.quantile,
                                 smoothingSigma: config.smoothingSigma
                         )
                         
                 case .huberAsymmetric:
                         noiseFloor = fitNoiseFloorHuber(
-                                magnitudes: magnitudes,
+                                magnitudesDB: magnitudesDB,
                                 delta: config.huberDelta,
                                 asymmetry: config.huberAsymmetry,
                                 smoothingSigma: config.smoothingSigma
@@ -36,13 +36,13 @@ extension Study {
                         
                 case .parametric1OverF:
                         noiseFloor = fitNoiseFloorParametric(
-                                magnitudes: magnitudes,
+                                magnitudesDB: magnitudesDB,
                                 frequencies: frequencies
                         )
                         
                 case .whittaker:
                         noiseFloor = fitNoiseFloorWhittaker(
-                                magnitudes: magnitudes,
+                                magnitudesDB: magnitudesDB,
                                 lambda: config.whittakerLambda,
                                 order: config.whittakerOrder
                         )
@@ -53,10 +53,10 @@ extension Study {
         }
         
         // MARK: - Fit Noise Floor Quantile
-        static func fitNoiseFloorQuantile(magnitudes: [Float],
+        static func fitNoiseFloorQuantile(magnitudesDB: [Float],
                                           quantile: Float,
                                           smoothingSigma: Float) -> [Float] {
-                let count = magnitudes.count
+                let count = magnitudesDB.count
                 var noiseFloor = [Float](repeating: 0, count: count)
                 
                 // Constants for convergence
@@ -64,13 +64,13 @@ extension Study {
                 let convergenceThreshold: Float = 1e-4
                 
                 // Initialize with moving minimum
-                noiseFloor = movingMinimum(magnitudes, windowSize: 20)
+                noiseFloor = movingMinimum(magnitudesDB, windowSize: 20)
                 
                 // Iterative quantile regression
                 for _ in 0..<maxIterations {
                         let previousFloor = noiseFloor
                         noiseFloor = quantileRegressionStep(
-                                data: magnitudes,
+                                data: magnitudesDB,
                                 current: noiseFloor,
                                 quantile: quantile,
                                 lambda: smoothingSigma
@@ -136,12 +136,12 @@ extension Study {
         
         // MARK: Fit Noise Floor Huber
         
-        static func fitNoiseFloorHuber(magnitudes: [Float],
+        static func fitNoiseFloorHuber(magnitudesDB: [Float],
                                        delta: Float,
                                        asymmetry: Float,
                                        smoothingSigma: Float) -> [Float] {
-                let count = magnitudes.count
-                var noiseFloor = movingMinimum(magnitudes, windowSize: 20)
+                let count = magnitudesDB.count
+                var noiseFloor = movingMinimum(magnitudesDB, windowSize: 20)
                 
                 // Constants
                 let maxIterations = 10
@@ -151,7 +151,7 @@ extension Study {
                         
                         // Compute Huber loss gradient with asymmetric weighting
                         for i in 0..<count {
-                                let residual = magnitudes[i] - noiseFloor[i]
+                                let residual = magnitudesDB[i] - noiseFloor[i]
                                 
                                 // Asymmetric weight - penalize positive errors more
                                 let weight = residual > 0 ? exp(-asymmetry * residual) : 1.0
@@ -178,7 +178,7 @@ extension Study {
                         
                         // Ensure floor doesn't exceed data
                         for i in 0..<count {
-                                noiseFloor[i] = min(noiseFloor[i], magnitudes[i])
+                                noiseFloor[i] = min(noiseFloor[i], magnitudesDB[i])
                         }
                 }
                 
@@ -187,9 +187,9 @@ extension Study {
         
         // MARK: - Fit Noise Floor Parametric
         
-        static func fitNoiseFloorParametric(magnitudes: [Float],
+        static func fitNoiseFloorParametric(magnitudesDB: [Float],
                                             frequencies: [Float]) -> [Float] {
-                let count = magnitudes.count
+                let count = magnitudesDB.count
                 
                 // Model: f(x) = a/x + b + c*log(x)
                 // Convert to linear form for least squares
@@ -209,10 +209,10 @@ extension Study {
                 var sumLogXY = Float(0)
                 var n = Float(0)
                 
-                // Use lower percentile of magnitudes for fitting
+                // Use lower percentile of magnitudesDB for fitting
                 var sortedMags = [(Float, Int)]()
                 for idx in validIndices {
-                        sortedMags.append((magnitudes[idx], idx))
+                        sortedMags.append((magnitudesDB[idx], idx))
                 }
                 sortedMags.sort { $0.0 < $1.0 }
                 
@@ -224,7 +224,7 @@ extension Study {
                         let freq = max(frequencies[idx], 1.0)  // Avoid log(0)
                         let x = 1.0 / freq
                         let logX = log10(freq)
-                        let y = magnitudes[idx]
+                        let y = magnitudesDB[idx]
                         
                         sumX += x
                         sumLogX += logX
@@ -250,7 +250,7 @@ extension Study {
                         noiseFloor[i] = a / freq + b
                         
                         // Ensure floor doesn't exceed data
-                        noiseFloor[i] = min(noiseFloor[i], magnitudes[i])
+                        noiseFloor[i] = min(noiseFloor[i], magnitudesDB[i])
                 }
                 
                 // Smooth the result
@@ -261,19 +261,19 @@ extension Study {
         
         // MARK: Fit Noise Floor Whittaker
         
-        static func fitNoiseFloorWhittaker(magnitudes: [Float],
+        static func fitNoiseFloorWhittaker(magnitudesDB: [Float],
                                            lambda: Float,
                                            order: Int) -> [Float] {
                 guard let smoothed = whittakerSmooth(
-                        signal: magnitudes,
+                        signal: magnitudesDB,
                         lambda: lambda,
                         order: order
                 ) else {
-                        return magnitudes
+                        return magnitudesDB
                 }
                 
                 // Clamp to original signal
-                return zip(smoothed, magnitudes).map { min($0, $1) }
+                return zip(smoothed, magnitudesDB).map { min($0, $1) }
         }
         
         // MARK: (Whittaker Helper)

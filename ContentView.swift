@@ -31,6 +31,7 @@ struct ContentView: View {
                                         config: audioProcessor.config
                                 )
                                 .background(Color.black)
+                                .frame(maxWidth: .infinity)
                                 .frame(
                                         maxWidth: .infinity,
                                         maxHeight: min(
@@ -83,6 +84,7 @@ struct ContentView: View {
                 .onAppear { startProcessing() }
                 .onDisappear { audioProcessor.stop() }
                 .navigationTitle("Spectrum Analyzer")
+                .edgesIgnoringSafeArea(.horizontal)
 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
 #endif

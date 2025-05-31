@@ -1,36 +1,24 @@
 import Foundation
-
+import SwiftUI
 enum NoiseFloorMethod {
         case quantileRegression
-//        case huberAsymmetric
-//        case parametric1OverF
-//        case whittaker
 }
-
-
-struct LayoutParameters {
-        var spectrumHeightFraction: CGFloat = 0.40
-        var studyHeightFraction: CGFloat    = 0.40
-        var maxPanelHeight: CGFloat?        = nil      // e.g. 420 to clamp on iPad
-        // add more UI knobs here as needed (button sizes, corner radii, etc.)
-}
-
 
 struct AnalyzerConfig {
         
         // MARK: - Audio capture
         struct Audio {
-                let sampleRate: Double       = 44_100
-                let nyquistMultiplier: Double = 0.5     // mostly for clarity
+                let sampleRate: Double = 44_100
+                let nyquistMultiplier: Double = 0.5
                 
                 var nyquistFrequency: Double { sampleRate * nyquistMultiplier }
         }
         
         // MARK: - FFT / STFT
         struct FFT {
-                let size: Int                = 8192
-                let outputBinCount: Int      = 512
-                let hopSize: Int             = 512 * 8                    // ≈ 86 windows/s
+                let size: Int = 8192
+                let outputBinCount: Int = 512
+                let hopSize: Int = 512 * 8
                 var frequencyResolution: Double {
                         Audio().sampleRate / Double(size)
                 }
@@ -42,36 +30,33 @@ struct AnalyzerConfig {
                 let targetFPS: Double = 60
                 var frameInterval: TimeInterval { 1.0 / targetFPS }
                 
-                let smoothingFactor: Float        = 0.3
-                let useLogFrequencyScale: Bool    = true
-                let minFrequency: Double          = 20
-                let maxFrequency: Double          = 20_000
+                let smoothingFactor: Float = 0.3
+                let useLogFrequencyScale: Bool = true
+                let minFrequency: Double = 20
+                let maxFrequency: Double = 20_000
         }
         
         // MARK: - Spectral peak detection
         struct PeakDetection {
-                var minProminence: Float  = 6.0   // dB
-                var minDistance: Int      = 5     // bins
-                var minHeight: Float      = -60.0 // dBFS
-                var prominenceWindow: Int = 50    // bins
+                var minProminence: Float = 6.0
+                var minDistance: Int = 5
+                var minHeight: Float = -60.0
+                var prominenceWindow: Int = 50
         }
         
         // MARK: - Noise-floor estimation
         struct NoiseFloor {
                 var method: NoiseFloorMethod = .quantileRegression
-                var thresholdOffset: Float = 0.0      // dB above fitted floor
-                // Common smoothing
-                var smoothingSigma: Float  = 0.1
-                // Quantile regression
-                var quantile: Float        = 0.02
+                var thresholdOffset: Float = 0.0
+                var quantile: Float = 0.02
+                var smoothingSigma: Float = 0.1
         }
-
-        // MARK: - Members & defaults
-        var audio         = Audio()
-        var fft           = FFT()
-        var rendering     = Rendering()
+        
+        var audio = Audio()
+        var fft = FFT()
+        var rendering = Rendering()
         var peakDetection = PeakDetection()
-        var noiseFloor    = NoiseFloor()
+        var noiseFloor = NoiseFloor()
         
         static let `default` = AnalyzerConfig()
 }

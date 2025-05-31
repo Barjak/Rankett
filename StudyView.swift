@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct StudyView: UIViewRepresentable {
-        let studyResult: StudyResult?
+        @ObservedObject var viewModel: StudyViewModel
         
         func makeUIView(context: Context) -> StudyGraphView {
                 let view = StudyGraphView()
@@ -13,19 +13,131 @@ struct StudyView: UIViewRepresentable {
         }
         
         func updateUIView(_ uiView: StudyGraphView, context: Context) {
-                uiView.studyResult = studyResult
-                uiView.setNeedsDisplay()
+                // Update target data
+                uiView.updateTargets(
+                        originalSpectrum: viewModel.targetOriginalSpectrum,
+                        noiseFloor: viewModel.targetNoiseFloor,
+                        denoisedSpectrum: viewModel.targetDenoisedSpectrum,
+                        frequencies: viewModel.targetFrequencies,
+                        peaks: viewModel.targetPeaks
+                )
         }
 }
 
 final class StudyGraphView: UIView {
-        var studyResult: StudyResult?
+        private let config = AnalyzerConfig.default
+        private var displayTimer: Timer?
+        
+        // Current (smoothed) display data
+        private var currentOriginal: [Float] = []
+        private var currentNoiseFloor: [Float] = []
+        private var currentDenoised: [Float] = []
+        private var currentFrequencies: [Float] = []
+        private var currentPeaks: [Peak] = []
+        
+        // Target data (from Study)
+        private var targetOriginal: [Float] = []
+        private var targetNoiseFloor: [Float] = []
+        private var targetDenoised: [Float] = []
+        private var targetFrequencies: [Float] = []
+        private var targetPeaks: [Peak] = []
+        
+        // Bin mapper
+        private var binMapper: BinMapper?
+        
+        // Thread safety
+        private let dataLock = NSLock()
+        
+        override init(frame: CGRect) {
+                super.init(frame: frame)
+                setupTimer()
+        }
+        
+        required init?(coder: NSCoder) {
+                super.init(coder: coder)
+                setupTimer()
+        }
+        
+        deinit {
+                displayTimer?.invalidate()
+        }
+        
+        private func setupTimer() {
+                displayTimer = Timer.scheduledTimer(withTimeInterval: config.rendering.frameInterval, repeats: true) { [weak self] _ in
+                        self?.updateDisplay()
+                }
+        }
+        
+        func updateTargets(originalSpectrum: [Float], noiseFloor: [Float], denoisedSpectrum: [Float],
+                           frequencies: [Float], peaks: [Peak]) {
+                dataLock.lock()
+                defer { dataLock.unlock() }
+                
+                guard !originalSpectrum.isEmpty else { return }
+                
+                // Create bin mapper if needed
+                if binMapper == nil || binMapper?.binFrequencies.count != config.fft.outputBinCount {
+                        binMapper = BinMapper(config: config, halfSize: originalSpectrum.count)
+                }
+                
+                // Map full resolution data to display bins
+                if let mapper = binMapper {
+                        targetOriginal = mapper.mapSpectrum(originalSpectrum)
+                        targetNoiseFloor = mapper.mapSpectrum(noiseFloor)
+                        targetDenoised = mapper.mapSpectrum(denoisedSpectrum)
+                        targetFrequencies = mapper.binFrequencies
+                        targetPeaks = peaks // Keep peaks in full resolution
+                }
+                
+                // Initialize current data if empty
+                if currentOriginal.isEmpty {
+                        currentOriginal = targetOriginal
+                        currentNoiseFloor = targetNoiseFloor
+                        currentDenoised = targetDenoised
+                        currentFrequencies = targetFrequencies
+                        currentPeaks = targetPeaks
+                }
+        }
+        
+        private func updateDisplay() {
+                dataLock.lock()
+                
+                // Smooth interpolation
+                let alpha = config.rendering.smoothingFactor
+                let beta = 1.0 - alpha
+                
+                // Smooth spectrum data
+                if targetOriginal.count == currentOriginal.count {
+                        for i in 0..<currentOriginal.count {
+                                currentOriginal[i] = currentOriginal[i] * alpha + targetOriginal[i] * beta
+                                currentNoiseFloor[i] = currentNoiseFloor[i] * alpha + targetNoiseFloor[i] * beta
+                                currentDenoised[i] = currentDenoised[i] * alpha + targetDenoised[i] * beta
+                        }
+                }
+                
+                // Update peaks (no smoothing)
+                currentPeaks = targetPeaks
+                currentFrequencies = targetFrequencies
+                
+                dataLock.unlock()
+                
+                // Trigger redraw
+                setNeedsDisplay()
+        }
         
         override func draw(_ rect: CGRect) {
-                guard let ctx = UIGraphicsGetCurrentContext(),
-                      let result = studyResult else { return }
+                guard let ctx = UIGraphicsGetCurrentContext() else { return }
                 
-                // Remove horizontal padding to fill screen width
+                dataLock.lock()
+                let originalDB = currentOriginal
+                let noiseFloorDB = currentNoiseFloor
+                let denoisedDB = currentDenoised
+                let frequencies = currentFrequencies
+                let peaks = currentPeaks
+                dataLock.unlock()
+                
+                guard !originalDB.isEmpty else { return }
+                
                 let verticalPadding: CGFloat = 40
                 let width = rect.width
                 let height = rect.height - 2 * verticalPadding
@@ -34,19 +146,12 @@ final class StudyGraphView: UIView {
                 ctx.setFillColor(UIColor.black.cgColor)
                 ctx.fill(rect)
                 
-                // Data is already in dB - no conversion needed
-                let originalDB = result.originalSpectrum
-                let noiseFloorDB = result.noiseFloor
-                let denoisedDB = result.denoisedSpectrum
-                
-                // Calculate dB range from data
+                // Calculate dB range
                 let allValues = originalDB + noiseFloorDB
-                let validValues = allValues.filter { $0 > -200 }  // Filter out extreme values
-                let minDB = max(validValues.min() ?? -80, -80)  // Clamp minimum to -80 dB
-                let maxDB = min(validValues.max() ?? 0, 20)     // Clamp maximum to 20 dB
+                let validValues = allValues.filter { $0 > -200 }
+                let minDB = max(validValues.min() ?? -80, -80)
+                let maxDB = min(validValues.max() ?? 0, 20)
                 let dbRange = maxDB - minDB
-                
-                print("StudyView: dB range: \(minDB) to \(maxDB)")
                 
                 // Draw grid
                 drawGrid(ctx: ctx, rect: rect, verticalPadding: verticalPadding, minDB: minDB, maxDB: maxDB)
@@ -54,32 +159,17 @@ final class StudyGraphView: UIView {
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: verticalPadding)
                 
-                // Draw curves without additional dB conversion
-                drawSpectrumCurve(ctx: ctx,
-                                  data: originalDB,
-                                  frequencies: result.frequencies,
-                                  width: width, height: height,
-                                  minDB: minDB, dbRange: dbRange,
-                                  color: UIColor.systemBlue.withAlphaComponent(0.5))
+                // Draw curves
+                drawSpectrumCurve(ctx: ctx, data: originalDB, frequencies: frequencies, width: width, height: height,
+                                  minDB: minDB, dbRange: dbRange, color: UIColor.systemBlue.withAlphaComponent(0.5))
                 
-                drawSpectrumCurve(ctx: ctx,
-                                  data: noiseFloorDB,
-                                  frequencies: result.frequencies,
-                                  width: width, height: height,
-                                  minDB: minDB, dbRange: dbRange,
-                                  color: UIColor.systemRed)
+                drawSpectrumCurve(ctx: ctx, data: noiseFloorDB, frequencies: frequencies,  width: width, height: height,
+                                  minDB: minDB, dbRange: dbRange, color: UIColor.systemRed)
                 
-                drawDenoisedSpectrum(ctx: ctx,
-                                     denoisedDB: denoisedDB,
-                                     frequencies: result.frequencies,
-                                     width: width, height: height,
-                                     minDB: minDB, dbRange: dbRange,
-                                     color: UIColor.systemGreen)
+                drawDenoisedSpectrum(ctx: ctx, denoisedDB: denoisedDB, frequencies: frequencies, width: width, height: height,
+                                     minDB: minDB, dbRange: dbRange, color: UIColor.systemGreen)
                 
-                drawPeaks(ctx: ctx,
-                          peaks: result.peaks,
-                          frequencies: result.frequencies,
-                          width: width, height: height,
+                drawPeaks(ctx: ctx, peaks: peaks, frequencies: frequencies, width: width, height: height,
                           minDB: minDB, dbRange: dbRange)
                 
                 ctx.restoreGState()
@@ -87,6 +177,7 @@ final class StudyGraphView: UIView {
                 // Draw legend
                 drawLegend(ctx: ctx, rect: rect, verticalPadding: verticalPadding)
         }
+        
         
         private func drawSpectrumCurve(ctx: CGContext,
                                        data: [Float],

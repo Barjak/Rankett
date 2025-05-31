@@ -76,7 +76,17 @@ final class AudioProcessor: ObservableObject {
                         print("Failed to load Test.mp3")
                         return
                 }
+                engine.mainMixerNode.removeTap(onBus: 0)
                 
+                // Stop engine if it's running
+                if engine.isRunning {
+                        engine.stop()
+                }
+                
+                // Detach and reattach player node to ensure clean state
+                if engine.attachedNodes.contains(playerNode) {
+                        engine.detach(playerNode)
+                }
                 engine.attach(playerNode)
                 let format = audioFile.processingFormat
                 engine.connect(playerNode, to: engine.mainMixerNode, format: format)

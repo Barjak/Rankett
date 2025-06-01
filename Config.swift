@@ -49,7 +49,7 @@ struct AnalyzerConfig {
                 var method: NoiseFloorMethod = .quantileRegression
                 var thresholdOffset: Float = 0.0
                 var quantile: Float = 0.02
-                var smoothingSigma: Float = 0.1
+                var smoothingSigma: Float = 10
         }
         
         var audio = Audio()

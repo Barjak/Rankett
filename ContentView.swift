@@ -37,10 +37,8 @@ struct ContentView: View {
                                         .background(Color.black)
                                         .frame(
                                                 maxWidth: .infinity,
-                                                maxHeight: min(
-                                                        geo.size.height * layout.studyHeightFraction,
-                                                        layout.maxPanelHeight ?? .infinity
-                                                )
+                                                minHeight: geo.size.height * layout.studyHeightFraction,
+                                                maxHeight: layout.maxPanelHeight ?? 1000
                                         )
                                         .layoutPriority(1)
                                 

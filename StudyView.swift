@@ -192,7 +192,7 @@ final class StudyGraphView: UIView {
                 
                 // Fixed dB range
                 let minDB: Float = -80
-                let maxDB: Float = 80
+                let maxDB: Float = 180
                 let dbRange = maxDB - minDB
                 
                 // Draw grid

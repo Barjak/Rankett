@@ -105,7 +105,7 @@ final class Study: ObservableObject {
         private let currentNoiseFloor: UnsafeMutablePointer<Float>
         private let previousNoiseFloor: UnsafeMutablePointer<Float>
         private let tempNoiseFloor: UnsafeMutablePointer<Float>
-        private let noiseFloorAlpha: Float = 0.9
+        private let noiseFloorAlpha: Float = 1.0
         
         // Buffers for quantile regression
         private let qrResultBuffer: UnsafeMutablePointer<Float>
@@ -132,7 +132,7 @@ final class Study: ObservableObject {
                 // Pre-allocate FFT buffers
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
-                let harmonicProfile: [Float] = [1.0, 0.5, 0.33, 0.25, 0.2]
+                let harmonicProfile: [Float] = [1.0]
                 self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: harmonicProfile)
                 
                 
@@ -362,9 +362,9 @@ final class Study: ObservableObject {
                                            count: Int,
                                            quantile: Float,
                                            smoothingSigma: Float) {
-                let maxIterations = 5
+                let maxIterations = 10
                 let convergenceThreshold: Float = 1e-4
-                let bandwidthSemitones: Float = 7.0
+                let bandwidthSemitones: Float = 12.0
                 
                 // Copy previous noise floor as starting point
                 memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)
@@ -425,7 +425,7 @@ final class Study: ObservableObject {
                         }
                         
                         // Update with gradient descent step
-                        qrResultBuffer[i] = current[i] + 0.1 * subgradient
+                        qrResultBuffer[i] = current[i] + 0.6 * subgradient
                 }
                 
                 // Apply total variation regularization

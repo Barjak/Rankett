@@ -1,13 +1,13 @@
 # TODO
-# Make the quantile noise floor smoothing log sensitive
-# We're reinitializing the noisefloor each time noiseFloor = movingMinimum(magnitudesDB, windowSize: 20)
+
+
 
 
 
 # Fix rendering scales and bounds
 
 
-# Find peaks
+
 # Do time domain tracking
 # Use Newton's method in the frequency domain to find peaks
 

@@ -180,18 +180,18 @@ final class StudyGraphView: UIView {
                 ctx.translateBy(x: 0, y: verticalPadding)
                 
                 // Draw curves
-                drawSpectrumCurve(ctx: ctx, data: originalDB, frequencies: frequencies,
-                                  width: width, height: height,
-                                  minDB: minDB, dbRange: dbRange,
-                                  color: UIColor.systemBlue.withAlphaComponent(0.5))
+//                drawSpectrumCurve(ctx: ctx, data: originalDB, frequencies: frequencies,
+//                                  width: width, height: height,
+//                                  minDB: minDB, dbRange: dbRange,
+//                                  color: UIColor.systemBlue.withAlphaComponent(0.8))
+//                
+//                drawSpectrumCurve(ctx: ctx, data: noiseFloorDB, frequencies: frequencies,
+//                                  width: width, height: height,
+//                                  minDB: minDB, dbRange: dbRange, color: UIColor.systemRed)
                 
-                drawSpectrumCurve(ctx: ctx, data: noiseFloorDB, frequencies: frequencies,
-                                  width: width, height: height,
-                                  minDB: minDB, dbRange: dbRange, color: UIColor.systemRed)
-                
-                drawDenoisedSpectrum(ctx: ctx, denoisedDB: denoisedDB, frequencies: frequencies,
-                                     width: width, height: height,
-                                     minDB: minDB, dbRange: dbRange, color: UIColor.systemGreen)
+//                drawDenoisedSpectrum(ctx: ctx, denoisedDB: denoisedDB, frequencies: frequencies,
+//                                     width: width, height: height,
+//                                     minDB: minDB, dbRange: dbRange, color: UIColor.systemGreen)
                 
                 // After drawing other curves, add HPS
                 drawHPSSpectrum(ctx: ctx, hpsSpectrum: hpsSpectrum, frequencies: frequencies,
@@ -219,7 +219,7 @@ final class StudyGraphView: UIView {
                 guard !hpsSpectrum.isEmpty else { return }
                 
                 ctx.setStrokeColor(UIColor.systemPurple.cgColor)
-                ctx.setLineWidth(1.5)
+                ctx.setLineWidth(0.5)
                 
                 let path = CGMutablePath()
                 var firstPoint = true

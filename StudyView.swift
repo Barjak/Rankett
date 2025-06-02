@@ -97,8 +97,13 @@ final class StudyGraphView: UIView {
                         targetNoiseFloor = mapper.mapSpectrum(noiseFloor)
                         targetDenoised = mapper.mapSpectrum(denoisedSpectrum)
                         targetFrequencies = mapper.binFrequencies
-
+                        
+                        // Bin-map HPS spectrum too
+                        // Note: HPS spectrum is shorter, so we need to handle it specially
+                        targetHPSSpectrum = mapper.mapHPSSpectrum(hpsSpectrum)
                 }
+                
+                targetHPSFundamental = hpsFundamental
                 
                 // Initialize current data if empty
                 if currentOriginal.isEmpty {
@@ -106,12 +111,6 @@ final class StudyGraphView: UIView {
                         currentNoiseFloor = targetNoiseFloor
                         currentDenoised = targetDenoised
                         currentFrequencies = targetFrequencies
-
-                }
-                targetHPSSpectrum = hpsSpectrum
-                targetHPSFundamental = hpsFundamental
-                
-                if currentHPSSpectrum.isEmpty {
                         currentHPSSpectrum = targetHPSSpectrum
                         currentHPSFundamental = targetHPSFundamental
                 }
@@ -220,25 +219,21 @@ final class StudyGraphView: UIView {
                 guard !hpsSpectrum.isEmpty else { return }
                 
                 ctx.setStrokeColor(UIColor.systemPurple.cgColor)
-                ctx.setLineWidth(0.5)
+                ctx.setLineWidth(1.5)
                 
                 let path = CGMutablePath()
-                
-                // HPS spectrum frequency calculation based on original FFT size
-                let fftSize = config.fft.size  // This should be 4096 or whatever your FFT size is
-                let sampleRate = Float(config.audio.sampleRate)
-                let binWidth = sampleRate / Float(fftSize)  // Correct bin width
-                
                 var firstPoint = true
                 
+                // Now HPS spectrum is already bin-mapped and aligned with frequencies array
                 for (i, value) in hpsSpectrum.enumerated() {
-                        // Calculate actual frequency for this HPS bin
-                        let freq = Float(i) * binWidth
+                        guard i < frequencies.count else { break }
                         
-                        // Skip frequencies outside display range
+                        let freq = frequencies[i]
+                        
+                        // Skip if outside display range
                         guard freq >= 20 && freq <= 20000 else { continue }
                         
-                        // Use log scale for x position (matching the grid)
+                        // Use log scale for x position
                         let logMin = log10(20.0)
                         let logMax = log10(20000.0)
                         let logFreq = log10(Double(freq))
@@ -258,7 +253,6 @@ final class StudyGraphView: UIView {
                         }
                 }
                 
-                // Only stroke if we have at least one point
                 if !firstPoint {
                         ctx.addPath(path)
                         ctx.strokePath()

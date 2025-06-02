@@ -67,6 +67,33 @@ final class BinMapper {
                 return output
         }
         
+        func mapHPSSpectrum(_ hpsSpectrum: [Float]) -> [Float] {
+                guard !hpsSpectrum.isEmpty else { return [] }
+                
+                var output = [Float](repeating: -80.0, count: binCount)
+                
+                // HPS spectrum has same bin width as original FFT
+                let hpsMaxIndex = hpsSpectrum.count - 1
+                
+                for (i, mapping) in logBinIndices.enumerated() {
+                        // Check if this bin's frequency is within HPS spectrum range
+                        if mapping.low <= hpsMaxIndex {
+                                if mapping.high <= hpsMaxIndex {
+                                        // Both bins are within range, interpolate normally
+                                        let value = (1 - mapping.fraction) * hpsSpectrum[mapping.low] +
+                                        mapping.fraction * hpsSpectrum[mapping.high]
+                                        output[i] = value
+                                } else {
+                                        // Only low bin is within range, use it directly
+                                        output[i] = hpsSpectrum[mapping.low]
+                                }
+                        }
+                        // If both bins are out of range, leave as -80.0
+                }
+                
+                return output
+        }
+        
         /// Get frequency for each output bin
         var binFrequencies: [Float] {
                 if config.rendering.useLogFrequencyScale {

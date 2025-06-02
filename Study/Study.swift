@@ -1,6 +1,7 @@
 import Foundation
 import Accelerate
 import CoreML
+
 final class HPSProcessor {
         private let maxHarmonics: Int
         private let workspace: UnsafeMutablePointer<Float>
@@ -24,9 +25,6 @@ final class HPSProcessor {
                 // Initialize workspace with the fundamental (weighted by 1/1 = 1.0)
                 memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
                 
-                // Create array to store HPS result
-                var hpsResult = Array(UnsafeBufferPointer(start: workspace, count: count))
-                
                 // Apply weighted harmonic product
                 for h in 2...maxHarmonics {
                         let weight = harmonicWeights[h - 1] // 1/h weight
@@ -40,20 +38,21 @@ final class HPSProcessor {
                         }
                 }
                 
-                // Copy the HPS result (only valid up to count/maxHarmonics)
-                let validCount = count / maxHarmonics
-                hpsResult = Array(UnsafeBufferPointer(start: workspace, count: validCount))
-                
                 // Find peak in HPS spectrum
+                let validCount = count / maxHarmonics
                 var maxValue: Float = -Float.infinity
                 var maxIndex: vDSP_Length = 0
                 vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(validCount))
                 
                 let fundamental = Float(maxIndex) * sampleRate / Float(count * 2)
                 
+                // Create array for return (only for the HPS spectrum visualization)
+                let hpsResult = Array(UnsafeBufferPointer(start: workspace, count: validCount))
+                
                 return (fundamental, hpsResult)
         }
 }
+
 // MARK: - Result Types
 struct StudyResult {
         let originalSpectrum: [Float]
@@ -61,8 +60,8 @@ struct StudyResult {
         let denoisedSpectrum: [Float]
         let frequencies: [Float]
         let peaks: [Peak]
-        let hpsSpectrum: [Float]      // New: HPS result
-        let hpsFundamental: Float      // New: Detected fundamental frequency
+        let hpsSpectrum: [Float]
+        let hpsFundamental: Float
         let timestamp: Date
         let processingTime: TimeInterval
 }
@@ -84,7 +83,6 @@ final class Study: ObservableObject {
         private var isRunning = false
         
         private let hpsProcessor: HPSProcessor
-
         
         // Pre-allocated buffers
         private let fftSize: Int
@@ -95,12 +93,23 @@ final class Study: ObservableObject {
         private let magnitudeBuffer: UnsafeMutablePointer<Float>
         private var splitComplex: DSPSplitComplex
         
-        private var previousPeakPositions: [Int: (x: Float, y: Float)] = [:] // Track by frequency bin
-        private let peakPositionAlpha: Float = 0.7 // EMA factor for peak positions
+        // Pre-allocated working buffers
+        private let denoisedBuffer: UnsafeMutablePointer<Float>
+        private let frequencyBuffer: UnsafeMutablePointer<Float>
         
-        // Noise floor tracking
-        private var previousNoiseFloor: [Float]?
+        // Noise floor tracking buffers
+        private let currentNoiseFloor: UnsafeMutablePointer<Float>
+        private let previousNoiseFloor: UnsafeMutablePointer<Float>
+        private let tempNoiseFloor: UnsafeMutablePointer<Float>
         private let noiseFloorAlpha: Float = 0.1
+        
+        // Buffers for quantile regression
+        private let qrResultBuffer: UnsafeMutablePointer<Float>
+        private let qrTvBuffer: UnsafeMutablePointer<Float>
+        
+        // Peak tracking
+        private var previousPeakPositions: [Int: (x: Float, y: Float)] = [:]
+        private let peakPositionAlpha: Float = 0.7
         
         // Published target buffers for StudyView
         @Published var targetOriginalSpectrum: [Float] = []
@@ -110,29 +119,51 @@ final class Study: ObservableObject {
         @Published var targetPeaks: [Peak] = []
         @Published var targetHPSSpectrum: [Float] = []
         @Published var targetHPSFundamental: Float = 0
-
-
         
         init(audioProcessor: AudioProcessor, config: AnalyzerConfig) {
                 self.audioProcessor = audioProcessor
                 self.config = config
-
                 
                 // Pre-allocate FFT buffers
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
                 self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, maxHarmonics: 5)
-
+                
                 let log2n = vDSP_Length(log2(Float(fftSize)))
                 guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {
                         fatalError("Failed to create FFT setup")
                 }
                 self.fftSetup = setup
                 
+                // Allocate all buffers
                 self.realBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.imagBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.magnitudeBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.splitComplex = DSPSplitComplex(realp: realBuffer, imagp: imagBuffer)
+                
+                self.denoisedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.frequencyBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                
+                self.currentNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.previousNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.tempNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                
+                self.qrResultBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.qrTvBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                
+                // Initialize buffers
+                realBuffer.initialize(repeating: 0, count: halfSize)
+                imagBuffer.initialize(repeating: 0, count: halfSize)
+                magnitudeBuffer.initialize(repeating: 0, count: halfSize)
+                denoisedBuffer.initialize(repeating: 0, count: halfSize)
+                currentNoiseFloor.initialize(repeating: -60, count: halfSize)  // Start with reasonable noise floor
+                previousNoiseFloor.initialize(repeating: -60, count: halfSize)
+                tempNoiseFloor.initialize(repeating: -60, count: halfSize)
+                qrResultBuffer.initialize(repeating: 0, count: halfSize)
+                qrTvBuffer.initialize(repeating: 0, count: halfSize)
+                
+                // Pre-compute frequency array once
+                generateFrequencyArray(into: frequencyBuffer, count: halfSize, sampleRate: Float(config.audio.sampleRate))
         }
         
         deinit {
@@ -140,6 +171,13 @@ final class Study: ObservableObject {
                 realBuffer.deallocate()
                 imagBuffer.deallocate()
                 magnitudeBuffer.deallocate()
+                denoisedBuffer.deallocate()
+                frequencyBuffer.deallocate()
+                currentNoiseFloor.deallocate()
+                previousNoiseFloor.deallocate()
+                tempNoiseFloor.deallocate()
+                qrResultBuffer.deallocate()
+                qrTvBuffer.deallocate()
         }
         
         func start() {
@@ -175,9 +213,6 @@ final class Study: ObservableObject {
                                         self?.targetHPSSpectrum = result.hpsSpectrum
                                         self?.targetHPSFundamental = result.hpsFundamental
                                 }
-                                
-                                // Process at 60 FPS or whatever rate you want
-                                //Thread.sleep(forTimeInterval: 1.0/60.0)
                         }
                 }
         }
@@ -187,10 +222,10 @@ final class Study: ObservableObject {
                 let startTime = CFAbsoluteTimeGetCurrent()
                 
                 // Pack real input
-                for i in 0..<halfSize {
-                        realBuffer[i] = audioWindow[i]
-                        imagBuffer[i] = 0.0
+                audioWindow.withUnsafeBufferPointer { windowPtr in
+                        memcpy(realBuffer, windowPtr.baseAddress!, halfSize * MemoryLayout<Float>.size)
                 }
+                memset(imagBuffer, 0, halfSize * MemoryLayout<Float>.size)
                 
                 // Perform FFT
                 fftSetup.forward(input: splitComplex, output: &splitComplex)
@@ -206,75 +241,56 @@ final class Study: ObservableObject {
                 var reference: Float = 1.0
                 vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
                 
-                // Create magnitude array
-                let magnitudesDB = Array(UnsafeBufferPointer(start: magnitudeBuffer, count: halfSize))
-                
-                // Generate frequency array
-                let frequencies = generateFrequencyArray(count: halfSize, sampleRate: Float(config.audio.sampleRate))
-                
-                // Fit noise floor
-                var noiseFloor = fitNoiseFloor(
-                        magnitudesDB: magnitudesDB,
-                        frequencies: frequencies,
+                // Fit noise floor (modifies currentNoiseFloor in-place)
+                fitNoiseFloor(
+                        magnitudesDB: magnitudeBuffer,
+                        frequencies: frequencyBuffer,
+                        count: halfSize,
                         config: config.noiseFloor
                 )
                 
                 // Apply EMA smoothing to noise floor
-                if let previous = previousNoiseFloor, previous.count == noiseFloor.count {
-                        for i in 0..<noiseFloor.count {
-                                noiseFloor[i] = noiseFloorAlpha * noiseFloor[i] + (1 - noiseFloorAlpha) * previous[i]
-                        }
-                }
-                previousNoiseFloor = noiseFloor
+                var alpha = noiseFloorAlpha
+                var oneMinusAlpha = 1 - noiseFloorAlpha
+                vDSP_vsmul(currentNoiseFloor, 1, &alpha, tempNoiseFloor, 1, vDSP_Length(halfSize))
+                vDSP_vsmul(previousNoiseFloor, 1, &oneMinusAlpha, previousNoiseFloor, 1, vDSP_Length(halfSize))
+                vDSP_vadd(tempNoiseFloor, 1, previousNoiseFloor, 1, currentNoiseFloor, 1, vDSP_Length(halfSize))
                 
-                // Denoise spectrum
-                let denoised = denoiseSpectrum(
-                        magnitudesDB: magnitudesDB,
-                        noiseFloorDB: noiseFloor
+                // Copy current to previous for next iteration
+                memcpy(previousNoiseFloor, currentNoiseFloor, halfSize * MemoryLayout<Float>.size)
+                
+                // Denoise spectrum (modifies denoisedBuffer in-place)
+                denoiseSpectrum(
+                        magnitudesDB: magnitudeBuffer,
+                        noiseFloorDB: currentNoiseFloor,
+                        output: denoisedBuffer,
+                        count: halfSize
                 )
                 
+                // Compute HPS
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
-                        magnitudes: denoised,  // Use raw magnitudes in dB
+                        magnitudes: denoisedBuffer,
                         count: halfSize,
                         sampleRate: Float(config.audio.sampleRate)
                 )
                 
-                // Find peaks in full resolution
+                // Find peaks
                 var peaks = findPeaks(
-                        in: denoised,
-                        frequencies: frequencies,
+                        in: denoisedBuffer,
+                        frequencies: frequencyBuffer,
+                        count: halfSize,
                         config: config.peakDetection
                 )
                 
-                
-                // TODO: Get this shit out of here and into its own function
                 // Take only the top 8 peaks by magnitude
                 peaks = Array(peaks.sorted { $0.magnitude > $1.magnitude }.prefix(8))
-                
-                // Sort by frequency for display
                 peaks.sort { $0.frequency < $1.frequency }
                 
-                // Apply EMA to peak positions for smooth animation
+                // Apply peak smoothing
                 var smoothedPeaks: [Peak] = []
                 for peak in peaks {
-                        let currentX = Float(peak.index)
-                        let currentY = peak.magnitude
-                        
-                        if let previous = previousPeakPositions[peak.index] {
-                                // EMA smooth the position
-                                let smoothedX = peakPositionAlpha * currentX + (1 - peakPositionAlpha) * previous.x
-                                let smoothedY = peakPositionAlpha * currentY + (1 - peakPositionAlpha) * previous.y
-                                
-                                // Create peak with smoothed display position but original frequency for label
-                                var smoothedPeak = peak
-                                // We'll handle the smooth rendering in the view
-                                smoothedPeaks.append(smoothedPeak)
-                                
-                                previousPeakPositions[peak.index] = (smoothedX, smoothedY)
-                        } else {
-                                smoothedPeaks.append(peak)
-                                previousPeakPositions[peak.index] = (currentX, currentY)
-                        }
+                        smoothedPeaks.append(peak)
+                        previousPeakPositions[peak.index] = (Float(peak.index), peak.magnitude)
                 }
                 
                 // Clean up old peak positions
@@ -283,6 +299,12 @@ final class Study: ObservableObject {
                 }
                 
                 let totalTime = CFAbsoluteTimeGetCurrent() - startTime
+                
+                // Create arrays for the result (only at the end for publishing)
+                let magnitudesDB = Array(UnsafeBufferPointer(start: magnitudeBuffer, count: halfSize))
+                let noiseFloor = Array(UnsafeBufferPointer(start: currentNoiseFloor, count: halfSize))
+                let denoised = Array(UnsafeBufferPointer(start: denoisedBuffer, count: halfSize))
+                let frequencies = Array(UnsafeBufferPointer(start: frequencyBuffer, count: halfSize))
                 
                 return StudyResult(
                         originalSpectrum: magnitudesDB,
@@ -298,116 +320,94 @@ final class Study: ObservableObject {
         }
         
         // MARK: - Generate Frequency Array
-        private func generateFrequencyArray(count: Int, sampleRate: Float) -> [Float] {
+        private func generateFrequencyArray(into buffer: UnsafeMutablePointer<Float>, count: Int, sampleRate: Float) {
                 let binWidth = sampleRate / Float(count * 2)
-                return (0..<count).map { Float($0) * binWidth }
+                for i in 0..<count {
+                        buffer[i] = Float(i) * binWidth
+                }
         }
+        
         // MARK: - Sign
         private func sign(_ x: Float) -> Float {
                 if x > 0 { return 1 }
                 else if x < 0 { return -1 }
                 else { return 0 }
         }
+        
         // MARK: - Fit Noise Floor
-        private func fitNoiseFloor(magnitudesDB: [Float],
-                                  frequencies: [Float],
-                                  config: AnalyzerConfig.NoiseFloor) -> [Float] {
-                
-                var noiseFloor: [Float]
+        private func fitNoiseFloor(magnitudesDB: UnsafeMutablePointer<Float>,
+                                   frequencies: UnsafeMutablePointer<Float>,
+                                   count: Int,
+                                   config: AnalyzerConfig.NoiseFloor) {
                 
                 switch config.method {
                 case .quantileRegression:
-                        noiseFloor = fitNoiseFloorQuantile(
+                        fitNoiseFloorQuantile(
                                 magnitudesDB: magnitudesDB,
+                                output: currentNoiseFloor,
+                                count: count,
                                 quantile: config.quantile,
                                 smoothingSigma: config.smoothingSigma
                         )
                 }
                 
-                // Apply threshold offset
-                return noiseFloor.map { $0 + config.thresholdOffset }
+                // Apply threshold offset in-place
+                var offset = config.thresholdOffset
+                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
         }
         
         // MARK: - Fit Noise Floor Quantile
-        private func fitNoiseFloorQuantile(magnitudesDB: [Float],
+        private func fitNoiseFloorQuantile(magnitudesDB: UnsafeMutablePointer<Float>,
+                                           output: UnsafeMutablePointer<Float>,
+                                           count: Int,
                                            quantile: Float,
-                                           smoothingSigma: Float) -> [Float] {
-                let count = magnitudesDB.count
-                var noiseFloor = [Float](repeating: 0, count: count)
-                
-                // Constants for convergence
-                let maxIterations = 10
+                                           smoothingSigma: Float) {
+                let maxIterations = 5
                 let convergenceThreshold: Float = 1e-4
+                let bandwidthSemitones: Float = 7.0
                 
-                // Musical bandwidth in semitones (adjust as needed)
-                let bandwidthSemitones: Float = 7.0  // 3 semitones = quarter octave
+                // Copy previous noise floor as starting point
+                memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)
                 
-                // Initialize with moving minimum using frequency-dependent window
-                noiseFloor = movingMinimumMusical(magnitudesDB, bandwidthSemitones: bandwidthSemitones)
-                
-                // Iterative quantile regression with frequency-dependent smoothing
+                // Iterative quantile regression
                 for _ in 0..<maxIterations {
-                        let previousFloor = noiseFloor
-                        noiseFloor = quantileRegressionStepMusical(
+                        // Copy current state
+                        memcpy(output, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                        
+                        // Perform quantile regression step
+                        quantileRegressionStepMusical(
                                 data: magnitudesDB,
-                                current: noiseFloor,
+                                current: output,
+                                output: tempNoiseFloor,
+                                count: count,
                                 quantile: quantile,
                                 lambda: smoothingSigma,
                                 bandwidthSemitones: bandwidthSemitones
                         )
                         
                         // Check convergence
-                        let change = zip(noiseFloor, previousFloor).map { abs($0 - $1) }.max() ?? 0
+                        var change: Float = 0
+                        vDSP_vsub(output, 1, tempNoiseFloor, 1, qrResultBuffer, 1, vDSP_Length(count))
+                        vDSP_vabs(qrResultBuffer, 1, qrResultBuffer, 1, vDSP_Length(count))
+                        vDSP_maxv(qrResultBuffer, 1, &change, vDSP_Length(count))
+                        
                         if change < convergenceThreshold {
                                 break
                         }
                 }
                 
-                // Final smoothing with frequency-dependent kernel
-                noiseFloor = gaussianSmoothMusical(noiseFloor, bandwidthSemitones: bandwidthSemitones / 2)
-                return noiseFloor
-        }
-        
-        // MARK: - Moving Minimum with Musical Bandwidth
-        private func movingMinimumMusical(_ data: [Float], bandwidthSemitones: Float) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
-                let sampleRate = Float(config.audio.sampleRate)
-                let binWidth = sampleRate / Float(fftSize)
-                
-                for i in 0..<count {
-                        let centerFreq = Float(i) * binWidth
-                        
-                        // Skip DC and very low frequencies
-                        if centerFreq < 20 {
-                                result[i] = data[i]
-                                continue
-                        }
-                        
-                        // Calculate frequency range for the musical bandwidth
-                        let semitoneRatio = pow(2.0, bandwidthSemitones / 12.0)
-                        let lowerFreq = centerFreq / pow(semitoneRatio, 0.5)
-                        let upperFreq = centerFreq * pow(semitoneRatio, 0.5)
-                        
-                        // Convert to bin indices
-                        let lowerBin = max(0, Int(lowerFreq / binWidth))
-                        let upperBin = min(count - 1, Int(upperFreq / binWidth))
-                        
-                        // Find minimum in the musical window
-                        result[i] = data[lowerBin...upperBin].min() ?? data[i]
-                }
-                
-                return result
+                // Final smoothing
+                gaussianSmoothMusical(tempNoiseFloor, output: output, count: count, bandwidthSemitones: bandwidthSemitones / 2)
         }
         
         // MARK: - Quantile Regression with Musical Bandwidth
-        private func quantileRegressionStepMusical(data: [Float],
-                                                   current: [Float],
+        private func quantileRegressionStepMusical(data: UnsafeMutablePointer<Float>,
+                                                   current: UnsafeMutablePointer<Float>,
+                                                   output: UnsafeMutablePointer<Float>,
+                                                   count: Int,
                                                    quantile: Float,
                                                    lambda: Float,
-                                                   bandwidthSemitones: Float) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
+                                                   bandwidthSemitones: Float) {
                 let sampleRate = Float(config.audio.sampleRate)
                 let binWidth = sampleRate / Float(fftSize)
                 
@@ -425,41 +425,36 @@ final class Study: ObservableObject {
                         }
                         
                         // Update with gradient descent step
-                        result[i] = current[i] + 0.1 * subgradient
+                        qrResultBuffer[i] = current[i] + 0.1 * subgradient
                 }
                 
-                // Apply total variation regularization with frequency-dependent weighting
-                for _ in 0..<3 {  // Inner iterations for TV
-                        var tvResult = result
+                // Apply total variation regularization
+                for _ in 0..<3 {
+                        memcpy(qrTvBuffer, qrResultBuffer, count * MemoryLayout<Float>.size)
                         
                         for i in 1..<(count-1) {
                                 let centerFreq = Float(i) * binWidth
                                 
-                                // Adjust regularization strength based on frequency
-                                // Higher frequencies need less smoothing in bin space
                                 let freqWeight = centerFreq > 20 ? log10(centerFreq / 20) + 1 : 1
                                 let adjustedLambda = lambda / freqWeight
                                 
-                                let diff1 = result[i] - result[i-1]
-                                let diff2 = result[i+1] - result[i]
+                                let diff1 = qrResultBuffer[i] - qrResultBuffer[i-1]
+                                let diff2 = qrResultBuffer[i+1] - qrResultBuffer[i]
                                 let tvGrad = sign(diff1) - sign(diff2)
-                                tvResult[i] = result[i] - adjustedLambda * tvGrad
+                                qrTvBuffer[i] = qrResultBuffer[i] - adjustedLambda * tvGrad
                         }
-                        result = tvResult
+                        memcpy(qrResultBuffer, qrTvBuffer, count * MemoryLayout<Float>.size)
                 }
                 
                 // Ensure noise floor doesn't exceed data
-                for i in 0..<count {
-                        result[i] = min(result[i], data[i])
-                }
-                
-                return result
+                vDSP_vmin(qrResultBuffer, 1, data, 1, output, 1, vDSP_Length(count))
         }
         
         // MARK: - Gaussian Smooth with Musical Bandwidth
-        private func gaussianSmoothMusical(_ data: [Float], bandwidthSemitones: Float) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
+        private func gaussianSmoothMusical(_ data: UnsafeMutablePointer<Float>,
+                                           output: UnsafeMutablePointer<Float>,
+                                           count: Int,
+                                           bandwidthSemitones: Float) {
                 let sampleRate = Float(config.audio.sampleRate)
                 let binWidth = sampleRate / Float(fftSize)
                 
@@ -468,7 +463,7 @@ final class Study: ObservableObject {
                         
                         // Skip DC and very low frequencies
                         if centerFreq < 20 {
-                                result[i] = data[i]
+                                output[i] = data[i]
                                 continue
                         }
                         
@@ -481,9 +476,9 @@ final class Study: ObservableObject {
                         let lowerBin = max(0, Int(lowerFreq / binWidth))
                         let upperBin = min(count - 1, Int(upperFreq / binWidth))
                         
-                        // Create Gaussian weights for this frequency-dependent window
+                        // Create Gaussian weights
                         let windowSize = upperBin - lowerBin + 1
-                        let sigma = Float(windowSize) / 1.0  // Adjust as needed
+                        let sigma = Float(windowSize) / 1.0
                         
                         var sum: Float = 0
                         var weightSum: Float = 0
@@ -495,56 +490,33 @@ final class Study: ObservableObject {
                                 weightSum += weight
                         }
                         
-                        result[i] = sum / weightSum
+                        output[i] = sum / weightSum
                 }
-                
-                return result
         }
-
         
         // MARK: - Denoising
-        private func denoiseSpectrum(magnitudesDB: [Float], noiseFloorDB: [Float]) -> [Float] {
-                let count = magnitudesDB.count
-                var denoised = [Float](repeating: -Float.infinity, count: count)
+        private func denoiseSpectrum(magnitudesDB: UnsafeMutablePointer<Float>,
+                                     noiseFloorDB: UnsafeMutablePointer<Float>,
+                                     output: UnsafeMutablePointer<Float>,
+                                     count: Int) {
+                // Subtract noise floor from signal
+                vDSP_vsub(noiseFloorDB, 1, magnitudesDB, 1, output, 1, vDSP_Length(count))
                 
-                for i in 0..<count {
-                        if magnitudesDB[i] > noiseFloorDB[i] {
-                                // Return the signal-to-noise ratio in dB
-                                denoised[i] = magnitudesDB[i] - noiseFloorDB[i]
-                        } else {
-                                denoised[i] = 0 // Signal is at or below noise floor
-                        }
-                }
-                
-                return denoised
+                // Clip negative values to 0
+                var zero: Float = 0
+                var ceiling = Float.greatestFiniteMagnitude
+                vDSP_vclip(output, 1, &zero, &ceiling, output, 1, vDSP_Length(count))
         }
-        
-        // MARK: Moving Minimum
-        
-        private func movingMinimum(_ data: [Float], windowSize: Int) -> [Float] {
-                let count = data.count
-                var result = [Float](repeating: 0, count: count)
-                
-                for i in 0..<count {
-                        let start = max(0, i - windowSize/2)
-                        let end = min(count, i + windowSize/2 + 1)
-                        result[i] = data[start..<end].min() ?? data[i]
-                }
-                
-                return result
-        }
-
-        
-        
         
         // MARK: - Find Peaks
-        private func findPeaks(in spectrum: [Float],
-                              frequencies: [Float],
-                              config: AnalyzerConfig.PeakDetection) -> [Peak] {
+        private func findPeaks(in spectrum: UnsafeMutablePointer<Float>,
+                               frequencies: UnsafeMutablePointer<Float>,
+                               count: Int,
+                               config: AnalyzerConfig.PeakDetection) -> [Peak] {
                 var peaks: [Peak] = []
                 
                 // Find local maxima
-                for i in 1..<(spectrum.count - 1) {
+                for i in 1..<(count - 1) {
                         if spectrum[i] > spectrum[i-1] &&
                                 spectrum[i] > spectrum[i+1] &&
                                 spectrum[i] > config.minHeight {
@@ -553,6 +525,7 @@ final class Study: ObservableObject {
                                 let (prominence, leftBase, rightBase) = calculateProminence(
                                         at: i,
                                         in: spectrum,
+                                        count: count,
                                         window: config.prominenceWindow
                                 )
                                 
@@ -574,13 +547,15 @@ final class Study: ObservableObject {
                 
                 return peaks
         }
+        
         // MARK: (Calculate Prominence)
         private func calculateProminence(at peakIndex: Int,
-                                        in spectrum: [Float],
-                                        window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
+                                         in spectrum: UnsafeMutablePointer<Float>,
+                                         count: Int,
+                                         window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
                 let peakHeight = spectrum[peakIndex]
                 let start = max(0, peakIndex - window)
-                let end = min(spectrum.count - 1, peakIndex + window)
+                let end = min(count - 1, peakIndex + window)
                 
                 // Find lowest points on each side
                 var leftMin = peakHeight
@@ -590,7 +565,7 @@ final class Study: ObservableObject {
                                 leftMin = spectrum[i]
                                 leftMinIndex = i
                         }
-                        if spectrum[i] > peakHeight { break }  // Higher peak found
+                        if spectrum[i] > peakHeight { break }
                 }
                 
                 var rightMin = peakHeight
@@ -600,12 +575,13 @@ final class Study: ObservableObject {
                                 rightMin = spectrum[i]
                                 rightMinIndex = i
                         }
-                        if spectrum[i] > peakHeight { break }  // Higher peak found
+                        if spectrum[i] > peakHeight { break }
                 }
                 
                 let prominence = peakHeight - max(leftMin, rightMin)
                 return (prominence, leftMinIndex, rightMinIndex)
         }
+        
         // MARK: (Filter By Distance)
         private func filterByDistance(_ peaks: [Peak], minDistance: Int) -> [Peak] {
                 guard !peaks.isEmpty else { return [] }

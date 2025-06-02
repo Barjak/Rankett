@@ -36,7 +36,7 @@ struct ContentView: View {
                                 StudyView(study: study)
                                         .background(Color.black)
                                         .frame(
-                                                maxWidth: .infinity,
+                                                maxWidth: 1000,
                                                 minHeight: geo.size.height * layout.studyHeightFraction,
                                                 maxHeight: layout.maxPanelHeight ?? 1000
                                         )

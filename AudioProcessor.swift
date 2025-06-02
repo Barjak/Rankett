@@ -32,7 +32,7 @@ final class AudioProcessor: ObservableObject {
         }
         
         func start() {
-                guard let url = Bundle.main.url(forResource: "Test", withExtension: "mp3"),
+                guard let url = Bundle.main.url(forResource: "Test1", withExtension: "mp3"),
                       let audioFile = try? AVAudioFile(forReading: url) else {
                         print("Failed to load Test.mp3")
                         return
@@ -94,23 +94,22 @@ final class AudioProcessor: ObservableObject {
         
         // MARK: - Public Data Access
         
-        func getWindow(size: Int, offset: Int = 0) -> [Float]? {
+        func getWindow(size: Int) -> [Float]? {
                 bufferLock.lock()
                 defer { bufferLock.unlock() }
                 
-                guard circularBuffer.canExtractWindow(of: size, at: offset) else { return nil }
+                guard circularBuffer.hasEnoughData(size: size) else { return nil }
                 
                 let window = UnsafeMutablePointer<Float>.allocate(capacity: size)
                 defer { window.deallocate() }
                 
-                circularBuffer.extractWindow(of: size, at: offset, to: window)
+                var success: Bool = circularBuffer.getLatest(size: size, to: window)
                 return Array(UnsafeBufferPointer(start: window, count: size))
         }
         
-        /// Check if a window of the specified size is available
         func hasWindow(size: Int) -> Bool {
                 bufferLock.lock()
                 defer { bufferLock.unlock() }
-                return circularBuffer.canExtractWindow(of: size)
+                return circularBuffer.hasEnoughData(size: size)
         }
 }

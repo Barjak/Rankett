@@ -158,8 +158,9 @@ final class Study: ObservableObject {
         private func continuousStudyLoop() {
                 while isRunning {
                         autoreleasepool {
+                                // Get the latest window
                                 guard let audioWindow = audioProcessor.getWindow(size: config.fft.size) else {
-                                        Thread.sleep(forTimeInterval: 0.01)
+                                        Thread.sleep(forTimeInterval: 0.001)
                                         return
                                 }
                                 
@@ -174,6 +175,9 @@ final class Study: ObservableObject {
                                         self?.targetHPSSpectrum = result.hpsSpectrum
                                         self?.targetHPSFundamental = result.hpsFundamental
                                 }
+                                
+                                // Process at 60 FPS or whatever rate you want
+                                //Thread.sleep(forTimeInterval: 1.0/60.0)
                         }
                 }
         }
@@ -230,7 +234,7 @@ final class Study: ObservableObject {
                 )
                 
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
-                        magnitudes: magnitudeBuffer,  // Use raw magnitudes in dB
+                        magnitudes: denoised,  // Use raw magnitudes in dB
                         count: halfSize,
                         sampleRate: Float(config.audio.sampleRate)
                 )
@@ -326,8 +330,8 @@ final class Study: ObservableObject {
         
         // MARK: - Fit Noise Floor Quantile
         private func fitNoiseFloorQuantile(magnitudesDB: [Float],
-                                          quantile: Float,
-                                          smoothingSigma: Float) -> [Float] {
+                                           quantile: Float,
+                                           smoothingSigma: Float) -> [Float] {
                 let count = magnitudesDB.count
                 var noiseFloor = [Float](repeating: 0, count: count)
                 
@@ -335,17 +339,21 @@ final class Study: ObservableObject {
                 let maxIterations = 10
                 let convergenceThreshold: Float = 1e-4
                 
-                // Initialize with moving minimum
-                noiseFloor = movingMinimum(magnitudesDB, windowSize: 20)
+                // Musical bandwidth in semitones (adjust as needed)
+                let bandwidthSemitones: Float = 7.0  // 3 semitones = quarter octave
                 
-                // Iterative quantile regression
+                // Initialize with moving minimum using frequency-dependent window
+                noiseFloor = movingMinimumMusical(magnitudesDB, bandwidthSemitones: bandwidthSemitones)
+                
+                // Iterative quantile regression with frequency-dependent smoothing
                 for _ in 0..<maxIterations {
                         let previousFloor = noiseFloor
-                        noiseFloor = quantileRegressionStep(
+                        noiseFloor = quantileRegressionStepMusical(
                                 data: magnitudesDB,
                                 current: noiseFloor,
                                 quantile: quantile,
-                                lambda: smoothingSigma
+                                lambda: smoothingSigma,
+                                bandwidthSemitones: bandwidthSemitones
                         )
                         
                         // Check convergence
@@ -355,18 +363,53 @@ final class Study: ObservableObject {
                         }
                 }
                 
-                // Final smoothing
-                noiseFloor = gaussianSmooth(noiseFloor, sigma: 2.0)
+                // Final smoothing with frequency-dependent kernel
+                noiseFloor = gaussianSmoothMusical(noiseFloor, bandwidthSemitones: bandwidthSemitones / 2)
                 return noiseFloor
         }
         
-        // MARK: - Quantile Regression Step
-        private func quantileRegressionStep(data: [Float],
-                                                   current: [Float],
-                                                   quantile: Float,
-                                                   lambda: Float) -> [Float] {
+        // MARK: - Moving Minimum with Musical Bandwidth
+        private func movingMinimumMusical(_ data: [Float], bandwidthSemitones: Float) -> [Float] {
                 let count = data.count
                 var result = [Float](repeating: 0, count: count)
+                let sampleRate = Float(config.audio.sampleRate)
+                let binWidth = sampleRate / Float(fftSize)
+                
+                for i in 0..<count {
+                        let centerFreq = Float(i) * binWidth
+                        
+                        // Skip DC and very low frequencies
+                        if centerFreq < 20 {
+                                result[i] = data[i]
+                                continue
+                        }
+                        
+                        // Calculate frequency range for the musical bandwidth
+                        let semitoneRatio = pow(2.0, bandwidthSemitones / 12.0)
+                        let lowerFreq = centerFreq / pow(semitoneRatio, 0.5)
+                        let upperFreq = centerFreq * pow(semitoneRatio, 0.5)
+                        
+                        // Convert to bin indices
+                        let lowerBin = max(0, Int(lowerFreq / binWidth))
+                        let upperBin = min(count - 1, Int(upperFreq / binWidth))
+                        
+                        // Find minimum in the musical window
+                        result[i] = data[lowerBin...upperBin].min() ?? data[i]
+                }
+                
+                return result
+        }
+        
+        // MARK: - Quantile Regression with Musical Bandwidth
+        private func quantileRegressionStepMusical(data: [Float],
+                                                   current: [Float],
+                                                   quantile: Float,
+                                                   lambda: Float,
+                                                   bandwidthSemitones: Float) -> [Float] {
+                let count = data.count
+                var result = [Float](repeating: 0, count: count)
+                let sampleRate = Float(config.audio.sampleRate)
+                let binWidth = sampleRate / Float(fftSize)
                 
                 // Compute subgradients for quantile loss
                 for i in 0..<count {
@@ -385,14 +428,22 @@ final class Study: ObservableObject {
                         result[i] = current[i] + 0.1 * subgradient
                 }
                 
-                // Apply total variation regularization
+                // Apply total variation regularization with frequency-dependent weighting
                 for _ in 0..<3 {  // Inner iterations for TV
                         var tvResult = result
+                        
                         for i in 1..<(count-1) {
+                                let centerFreq = Float(i) * binWidth
+                                
+                                // Adjust regularization strength based on frequency
+                                // Higher frequencies need less smoothing in bin space
+                                let freqWeight = centerFreq > 20 ? log10(centerFreq / 20) + 1 : 1
+                                let adjustedLambda = lambda / freqWeight
+                                
                                 let diff1 = result[i] - result[i-1]
                                 let diff2 = result[i+1] - result[i]
                                 let tvGrad = sign(diff1) - sign(diff2)
-                                tvResult[i] = result[i] - lambda * tvGrad
+                                tvResult[i] = result[i] - adjustedLambda * tvGrad
                         }
                         result = tvResult
                 }
@@ -404,6 +455,52 @@ final class Study: ObservableObject {
                 
                 return result
         }
+        
+        // MARK: - Gaussian Smooth with Musical Bandwidth
+        private func gaussianSmoothMusical(_ data: [Float], bandwidthSemitones: Float) -> [Float] {
+                let count = data.count
+                var result = [Float](repeating: 0, count: count)
+                let sampleRate = Float(config.audio.sampleRate)
+                let binWidth = sampleRate / Float(fftSize)
+                
+                for i in 0..<count {
+                        let centerFreq = Float(i) * binWidth
+                        
+                        // Skip DC and very low frequencies
+                        if centerFreq < 20 {
+                                result[i] = data[i]
+                                continue
+                        }
+                        
+                        // Calculate frequency range for the musical bandwidth
+                        let semitoneRatio = pow(2.0, bandwidthSemitones / 12.0)
+                        let lowerFreq = centerFreq / pow(semitoneRatio, 0.5)
+                        let upperFreq = centerFreq * pow(semitoneRatio, 0.5)
+                        
+                        // Convert to bin indices
+                        let lowerBin = max(0, Int(lowerFreq / binWidth))
+                        let upperBin = min(count - 1, Int(upperFreq / binWidth))
+                        
+                        // Create Gaussian weights for this frequency-dependent window
+                        let windowSize = upperBin - lowerBin + 1
+                        let sigma = Float(windowSize) / 1.0  // Adjust as needed
+                        
+                        var sum: Float = 0
+                        var weightSum: Float = 0
+                        
+                        for j in lowerBin...upperBin {
+                                let distance = Float(j - i)
+                                let weight = exp(-(distance * distance) / (2 * sigma * sigma))
+                                sum += data[j] * weight
+                                weightSum += weight
+                        }
+                        
+                        result[i] = sum / weightSum
+                }
+                
+                return result
+        }
+
         
         // MARK: - Denoising
         private func denoiseSpectrum(magnitudesDB: [Float], noiseFloorDB: [Float]) -> [Float] {
@@ -436,50 +533,7 @@ final class Study: ObservableObject {
                 
                 return result
         }
-        // MARK: Gaussian Smooth
-        private func gaussianSmooth(_ data: [Float], sigma: Float) -> [Float] {
-                let kernelSize = Int(ceil(sigma * 3)) * 2 + 1
-                let kernel = gaussianKernel(size: kernelSize, sigma: sigma)
-                
-                var result = [Float](repeating: 0, count: data.count)
-                let halfKernel = kernelSize / 2
-                
-                for i in 0..<data.count {
-                        var sum: Float = 0
-                        var weightSum: Float = 0
-                        
-                        for j in 0..<kernelSize {
-                                let dataIndex = i + j - halfKernel
-                                if dataIndex >= 0 && dataIndex < data.count {
-                                        sum += data[dataIndex] * kernel[j]
-                                        weightSum += kernel[j]
-                                }
-                        }
-                        result[i] = sum / weightSum
-                }
-                return result
-        }
-        // MARK: (Gaussian Kernel)
-        private func gaussianKernel(size: Int, sigma: Float) -> [Float] {
-                let center = Float(size / 2)
-                let twoSigmaSquared = 2 * sigma * sigma
-                
-                var kernel = [Float](repeating: 0, count: size)
-                var sum: Float = 0
-                
-                for i in 0..<size {
-                        let x = Float(i) - center
-                        kernel[i] = exp(-(x * x) / twoSigmaSquared)
-                        sum += kernel[i]
-                }
-                
-                // Normalize
-                for i in 0..<size {
-                        kernel[i] /= sum
-                }
-                
-                return kernel
-        }
+
         
         
         

@@ -1,5 +1,6 @@
 # TODO
 # Make the quantile noise floor smoothing log sensitive
+# We're reinitializing the noisefloor each time noiseFloor = movingMinimum(magnitudesDB, windowSize: 20)
 
 
 

@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 
-
 struct StudyView: UIViewRepresentable {
         @ObservedObject var study: Study
         
@@ -224,10 +223,10 @@ final class StudyGraphView: UIView {
                 drawFundamental(ctx: ctx, fundamental: currentHPSFundamental,
                                 width: width, height: height)
                 
-                drawPeaks(ctx: ctx, peaks: peaks, frequencies: frequencies,
-                          width: width, height: height,
-                          minDB: minDB, dbRange: dbRange)
-                
+//                drawPeaks(ctx: ctx, peaks: peaks, frequencies: frequencies,
+//                          width: width, height: height,
+//                          minDB: minDB, dbRange: dbRange)
+//                
                 ctx.restoreGState()
                 
                 // Draw SNR scale on right side

@@ -30,7 +30,7 @@ struct AnalyzerConfig {
                 let targetFPS: Double = 60
                 var frameInterval: TimeInterval { 1.0 / targetFPS }
                 
-                let smoothingFactor: Float = 0.8
+                let smoothingFactor: Float = 0.7
                 let useLogFrequencyScale: Bool = true
                 let minFrequency: Double = 20
                 let maxFrequency: Double = 20_000
@@ -47,7 +47,7 @@ struct AnalyzerConfig {
         // MARK: - Noise-floor estimation
         struct NoiseFloor {
                 var method: NoiseFloorMethod = .quantileRegression
-                var thresholdOffset: Float = 0.0
+                var thresholdOffset: Float = 5.0
                 var quantile: Float = 0.02
                 var smoothingSigma: Float = 10
         }

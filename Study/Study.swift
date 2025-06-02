@@ -184,8 +184,8 @@ final class Study: ObservableObject {
                 
                 // Pack real input
                 for i in 0..<halfSize {
-                        realBuffer[i] = audioWindow[i * 2]
-                        imagBuffer[i] = audioWindow[i * 2 + 1]
+                        realBuffer[i] = audioWindow[i]
+                        imagBuffer[i] = 0.0
                 }
                 
                 // Perform FFT

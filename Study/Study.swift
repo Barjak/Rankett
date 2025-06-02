@@ -3,16 +3,12 @@ import Accelerate
 import CoreML
 
 final class HPSProcessor {
-        private let maxHarmonics: Int
+        private let harmonicProfile: [Float]
         private let workspace: UnsafeMutablePointer<Float>
-        private let harmonicWeights: [Float]
         
-        init(spectrumSize: Int, maxHarmonics: Int = 5) {
-                self.maxHarmonics = maxHarmonics
+        init(spectrumSize: Int, harmonicProfile: [Float] = [1.0, 0.8, 0.6, 0.4, 0.2]) {
+                self.harmonicProfile = harmonicProfile
                 self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
-                
-                // Generate 1/n weights for harmonics
-                self.harmonicWeights = (1...maxHarmonics).map { 1.0 / Float($0) }
         }
         
         deinit {
@@ -22,31 +18,38 @@ final class HPSProcessor {
         func computeHPS(magnitudes: UnsafePointer<Float>,
                         count: Int,
                         sampleRate: Float) -> (fundamental: Float, hpsSpectrum: [Float]) {
-                // Initialize workspace with the fundamental (weighted by 1/1 = 1.0)
-                memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
+                // Initialize workspace with the fundamental weighted by first profile value
+                if !harmonicProfile.isEmpty {
+                        var fundamentalWeight = harmonicProfile[0]
+                        vDSP_vsmul(magnitudes, 1, &fundamentalWeight, workspace, 1, vDSP_Length(count))
+                } else {
+                        memcpy(workspace, magnitudes, count * MemoryLayout<Float>.size)
+                }
                 
-                // Apply weighted harmonic product
-                for h in 2...maxHarmonics {
-                        let weight = harmonicWeights[h - 1] // 1/h weight
+                // Apply weighted harmonic product based on profile
+                for (h, weight) in harmonicProfile.enumerated().dropFirst() {
+                        let harmonicNumber = h + 2 // Since we dropped first, h=0 means 2nd harmonic
                         
-                        for i in 0..<(count / h) {
-                                let harmonicIndex = i * h
-                                if harmonicIndex < count {
-                                        // Apply weighted multiplication in log domain (addition)
-                                        workspace[i] += weight * magnitudes[harmonicIndex]
+                        if weight > 0 { // Only process non-zero weights
+                                for i in 0..<(count / harmonicNumber) {
+                                        let harmonicIndex = i * harmonicNumber
+                                        if harmonicIndex < count {
+                                                // Apply weighted multiplication in log domain (addition)
+                                                workspace[i] += weight * magnitudes[harmonicIndex]
+                                        }
                                 }
                         }
                 }
                 
                 // Find peak in HPS spectrum
-                let validCount = count / maxHarmonics
+                let validCount = count / max(harmonicProfile.count, 1)
                 var maxValue: Float = -Float.infinity
                 var maxIndex: vDSP_Length = 0
                 vDSP_maxvi(workspace, 1, &maxValue, &maxIndex, vDSP_Length(validCount))
                 
                 let fundamental = Float(maxIndex) * sampleRate / Float(count * 2)
                 
-                // Create array for return (only for the HPS spectrum visualization)
+                // Create array for return (only valid portion of HPS spectrum)
                 let hpsResult = Array(UnsafeBufferPointer(start: workspace, count: validCount))
                 
                 return (fundamental, hpsResult)
@@ -59,7 +62,6 @@ struct StudyResult {
         let noiseFloor: [Float]
         let denoisedSpectrum: [Float]
         let frequencies: [Float]
-        let peaks: [Peak]
         let hpsSpectrum: [Float]
         let hpsFundamental: Float
         let timestamp: Date
@@ -81,8 +83,10 @@ final class Study: ObservableObject {
         private let config: AnalyzerConfig
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         private var isRunning = false
+        private var isFirstRun = true
         
         private let hpsProcessor: HPSProcessor
+
         
         // Pre-allocated buffers
         private let fftSize: Int
@@ -101,7 +105,7 @@ final class Study: ObservableObject {
         private let currentNoiseFloor: UnsafeMutablePointer<Float>
         private let previousNoiseFloor: UnsafeMutablePointer<Float>
         private let tempNoiseFloor: UnsafeMutablePointer<Float>
-        private let noiseFloorAlpha: Float = 0.1
+        private let noiseFloorAlpha: Float = 0.9
         
         // Buffers for quantile regression
         private let qrResultBuffer: UnsafeMutablePointer<Float>
@@ -124,10 +128,13 @@ final class Study: ObservableObject {
                 self.audioProcessor = audioProcessor
                 self.config = config
                 
+                
                 // Pre-allocate FFT buffers
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
-                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, maxHarmonics: 5)
+                let harmonicProfile: [Float] = [1.0, 0.5, 0.33, 0.25, 0.2]
+                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: harmonicProfile)
+                
                 
                 let log2n = vDSP_Length(log2(Float(fftSize)))
                 guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {
@@ -209,7 +216,6 @@ final class Study: ObservableObject {
                                         self?.targetNoiseFloor = result.noiseFloor
                                         self?.targetDenoisedSpectrum = result.denoisedSpectrum
                                         self?.targetFrequencies = result.frequencies
-                                        self?.targetPeaks = result.peaks
                                         self?.targetHPSSpectrum = result.hpsSpectrum
                                         self?.targetHPSFundamental = result.hpsFundamental
                                 }
@@ -218,104 +224,98 @@ final class Study: ObservableObject {
         }
         
         // MARK: - Main Analysis
-        private func perform(audioWindow: [Float]) -> StudyResult {
-                let startTime = CFAbsoluteTimeGetCurrent()
+        fileprivate func perform(audioWindow: [Float]) -> StudyResult {
+                // ───── helpers ───────────────────────────────────────────────────────────
+                @inline(__always)
+                func log(_ label: String, _ last: inout CFAbsoluteTime) {
+                        let now = CFAbsoluteTimeGetCurrent()
+                        print("[Study] \(label): \(String(format: "%.3f", (now - last) * 1_000)) ms")
+                        last = now
+                }
+                // ─────────────────────────────────────────────────────────────────────────
                 
-                // Pack real input
+                let overallStart = CFAbsoluteTimeGetCurrent()
+                var checkpoint   = overallStart
+                defer {
+                        let total = (CFAbsoluteTimeGetCurrent() - overallStart) * 1_000
+                        print("[Study] perform(total): \(String(format: "%.3f", total)) ms\n")
+                }
+                
+                // 1️⃣  Pack real input -----------------------------------------------------
                 audioWindow.withUnsafeBufferPointer { windowPtr in
                         memcpy(realBuffer, windowPtr.baseAddress!, halfSize * MemoryLayout<Float>.size)
                 }
                 memset(imagBuffer, 0, halfSize * MemoryLayout<Float>.size)
+                log("pack window", &checkpoint)
                 
-                // Perform FFT
+                // 2️⃣  FFT (forward) -------------------------------------------------------
                 fftSetup.forward(input: splitComplex, output: &splitComplex)
-                
-                // Compute magnitude spectrum
+                var scaleFactor: Float = 2.0 / Float(fftSize)
+                vDSP_vsmul(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(halfSize))
                 vDSP_zvmags(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(halfSize))
+                log("fft & magnitude", &checkpoint)
                 
-                // Convert to dB
-                var floor: Float = 1e-10
-                var ceiling: Float = Float.greatestFiniteMagnitude
+                // 3️⃣  Convert to dB -------------------------------------------------------
+                var floor: Float    = 1e-10
+                var ceiling: Float  = .greatestFiniteMagnitude
                 vDSP_vclip(magnitudeBuffer, 1, &floor, &ceiling, magnitudeBuffer, 1, vDSP_Length(halfSize))
-                
                 var reference: Float = 1.0
                 vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
+                log("to dB", &checkpoint)
                 
-                // Fit noise floor (modifies currentNoiseFloor in-place)
+                // 4️⃣  Noise‑floor estimation --------------------------------------------
+                if isFirstRun {
+                        initializeNoiseFloor(firstMagnitudeSpectrum: magnitudeBuffer, count: halfSize)
+                        isFirstRun = false
+                }
                 fitNoiseFloor(
                         magnitudesDB: magnitudeBuffer,
                         frequencies: frequencyBuffer,
                         count: halfSize,
                         config: config.noiseFloor
                 )
-                
-                // Apply EMA smoothing to noise floor
-                var alpha = noiseFloorAlpha
-                var oneMinusAlpha = 1 - noiseFloorAlpha
-                vDSP_vsmul(currentNoiseFloor, 1, &alpha, tempNoiseFloor, 1, vDSP_Length(halfSize))
+                var alpha: Float         = noiseFloorAlpha
+                var oneMinusAlpha: Float = 1 - noiseFloorAlpha
+                vDSP_vsmul(currentNoiseFloor, 1, &alpha, tempNoiseFloor,   1, vDSP_Length(halfSize))
                 vDSP_vsmul(previousNoiseFloor, 1, &oneMinusAlpha, previousNoiseFloor, 1, vDSP_Length(halfSize))
                 vDSP_vadd(tempNoiseFloor, 1, previousNoiseFloor, 1, currentNoiseFloor, 1, vDSP_Length(halfSize))
-                
-                // Copy current to previous for next iteration
                 memcpy(previousNoiseFloor, currentNoiseFloor, halfSize * MemoryLayout<Float>.size)
+                log("noise‑floor", &checkpoint)
                 
-                // Denoise spectrum (modifies denoisedBuffer in-place)
+                // 5️⃣  Denoise spectrum ---------------------------------------------------
                 denoiseSpectrum(
                         magnitudesDB: magnitudeBuffer,
                         noiseFloorDB: currentNoiseFloor,
-                        output: denoisedBuffer,
-                        count: halfSize
+                        output:       denoisedBuffer,
+                        count:        halfSize
                 )
+                log("denoise", &checkpoint)
                 
-                // Compute HPS
+                // 6️⃣  Harmonic Product Spectrum -----------------------------------------
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
                         magnitudes: denoisedBuffer,
-                        count: halfSize,
+                        count:      halfSize,
                         sampleRate: Float(config.audio.sampleRate)
                 )
+                log("hps", &checkpoint)
                 
-                // Find peaks
-                var peaks = findPeaks(
-                        in: denoisedBuffer,
-                        frequencies: frequencyBuffer,
-                        count: halfSize,
-                        config: config.peakDetection
-                )
                 
-                // Take only the top 8 peaks by magnitude
-                peaks = Array(peaks.sorted { $0.magnitude > $1.magnitude }.prefix(8))
-                peaks.sort { $0.frequency < $1.frequency }
-                
-                // Apply peak smoothing
-                var smoothedPeaks: [Peak] = []
-                for peak in peaks {
-                        smoothedPeaks.append(peak)
-                        previousPeakPositions[peak.index] = (Float(peak.index), peak.magnitude)
-                }
-                
-                // Clean up old peak positions
-                previousPeakPositions = previousPeakPositions.filter { key, _ in
-                        peaks.contains { $0.index == key }
-                }
-                
-                let totalTime = CFAbsoluteTimeGetCurrent() - startTime
-                
-                // Create arrays for the result (only at the end for publishing)
-                let magnitudesDB = Array(UnsafeBufferPointer(start: magnitudeBuffer, count: halfSize))
-                let noiseFloor = Array(UnsafeBufferPointer(start: currentNoiseFloor, count: halfSize))
-                let denoised = Array(UnsafeBufferPointer(start: denoisedBuffer, count: halfSize))
-                let frequencies = Array(UnsafeBufferPointer(start: frequencyBuffer, count: halfSize))
+                // 8️⃣  Package results ----------------------------------------------------
+                let magnitudesDB = Array(UnsafeBufferPointer(start: magnitudeBuffer,  count: halfSize))
+                let noiseFloor   = Array(UnsafeBufferPointer(start: currentNoiseFloor, count: halfSize))
+                let denoised     = Array(UnsafeBufferPointer(start: denoisedBuffer,   count: halfSize))
+                let frequencies  = Array(UnsafeBufferPointer(start: frequencyBuffer,  count: halfSize))
+                log("package result", &checkpoint)
                 
                 return StudyResult(
-                        originalSpectrum: magnitudesDB,
-                        noiseFloor: noiseFloor,
+                        originalSpectrum:  magnitudesDB,
+                        noiseFloor:       noiseFloor,
                         denoisedSpectrum: denoised,
-                        frequencies: frequencies,
-                        peaks: smoothedPeaks,
-                        hpsSpectrum: hpsSpectrum,
-                        hpsFundamental: hpsFundamental,
-                        timestamp: Date(),
-                        processingTime: totalTime
+                        frequencies:      frequencies,
+                        hpsSpectrum:      hpsSpectrum,
+                        hpsFundamental:   hpsFundamental,
+                        timestamp:        Date(),
+                        processingTime:   CFAbsoluteTimeGetCurrent() - overallStart
                 )
         }
         
@@ -598,5 +598,48 @@ final class Study: ObservableObject {
                 }
                 
                 return kept.sorted { $0.index < $1.index }
+        }
+        
+        private func initializeNoiseFloor(firstMagnitudeSpectrum: UnsafeMutablePointer<Float>, count: Int) {
+                // Copy the magnitude spectrum to the noise floor buffers
+                memcpy(currentNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
+                memcpy(previousNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
+                
+                // Apply heavy smoothing multiple times to get a good initial estimate
+                for _ in 0..<3 {
+                        // Apply moving minimum to remove peaks
+                        movingMinimumInPlace(currentNoiseFloor, output: tempNoiseFloor, count: count, windowSize: 20)
+                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                        
+                        // Apply gaussian smoothing with wide bandwidth
+                        gaussianSmoothMusical(currentNoiseFloor, output: tempNoiseFloor, count: count, bandwidthSemitones: 12.0)
+                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                }
+                
+                // Subtract a few dB to ensure we start below the signal
+                var offset: Float = -3.0
+                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
+                
+                // Copy to previousNoiseFloor so both start the same
+                memcpy(previousNoiseFloor, currentNoiseFloor, count * MemoryLayout<Float>.size)
+        }
+        
+        // Helper function for moving minimum
+        private func movingMinimumInPlace(_ data: UnsafeMutablePointer<Float>,
+                                          output: UnsafeMutablePointer<Float>,
+                                          count: Int,
+                                          windowSize: Int) {
+                for i in 0..<count {
+                        let start = max(0, i - windowSize/2)
+                        let end = min(count, i + windowSize/2 + 1)
+                        
+                        var minValue: Float = Float.infinity
+                        for j in start..<end {
+                                if data[j] < minValue {
+                                        minValue = data[j]
+                                }
+                        }
+                        output[i] = minValue
+                }
         }
 }

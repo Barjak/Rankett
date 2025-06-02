@@ -16,6 +16,7 @@ extension EnvironmentValues {
 }
 
 
+
 struct ContentView: View {
         // MARK: – Analysis engine
         @StateObject private var audioProcessor: AudioProcessor
@@ -118,13 +119,17 @@ struct TuningControlsView: View {
         @Binding var a440: Double
         @Binding var isProcessing: Bool
         
+        // Additional state for configuration
+        @State private var showTemperamentConfig = false
+        @State private var deviationUnit: DeviationUnit = .cents
+        
         // Callbacks
         var startStopAction: () -> Void
         var autoTuneAction: () -> Void
         
         var body: some View {
-                VStack(spacing: 24) {
-                        // Playback control row
+                VStack(spacing: 20) {
+                        // Top row: Playback controls
                         HStack(spacing: 16) {
                                 Button(action: startStopAction) {
                                         Label(isProcessing ? "Stop" : "Start",
@@ -132,76 +137,189 @@ struct TuningControlsView: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 
-                                Button("Auto Tune", action: autoTuneAction)
-                                        .buttonStyle(.borderedProminent)
+                                Spacer()
+                                
+                                Button(action: autoTuneAction) {
+                                        Label("Auto", systemImage: "wand.and.stars")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .help("Auto-tune based on current note and audio stream")
                         }
                         .font(.body)
                         
-                        // Large targeted‑note display
-                        Text(targetedNote)
-                                .font(.system(size: 56, weight: .bold, design: .rounded))
-                                .minimumScaleFactor(0.5)
-                                .frame(maxWidth: .infinity)
+                        // Large targeted note display with increment/decrement
+                        VStack(spacing: 16) {
+                                Text(targetedNote)
+                                        .font(.system(size: 72, weight: .bold, design: .rounded))
+                                        .minimumScaleFactor(0.5)
+                                        .frame(maxWidth: .infinity)
+                                
+                                HStack(spacing: 20) {
+                                        Button(action: { decrementNote() }) {
+                                                Image(systemName: "minus.circle.fill")
+                                                        .font(.system(size: 36))
+                                        }
+                                        .buttonStyle(.borderless)
+                                        
+                                        VStack(spacing: 4) {
+                                                Text("Step Size")
+                                                        .font(.caption)
+                                                        .foregroundColor(.secondary)
+                                                Picker("Increment", selection: $incrementSteps) {
+                                                        ForEach([1, 2, 3, 12], id: \.self) { value in
+                                                                Text("\(value)").tag(value)
+                                                        }
+                                                }
+                                                .pickerStyle(.segmented)
+                                                .frame(width: 200)
+                                        }
+                                        
+                                        Button(action: { incrementNote() }) {
+                                                Image(systemName: "plus.circle.fill")
+                                                        .font(.system(size: 36))
+                                        }
+                                        .buttonStyle(.borderless)
+                                }
+                        }
                         
-                        // Note increment controls
-                        HStack(spacing: 12) {
-                                Button { /* TODO: decrement note */ } label: {
-                                        Image(systemName: "chevron.left.circle.fill").font(.largeTitle)
+                        Divider()
+                        
+                        // Temperament section
+                        HStack(spacing: 16) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                        Text("Temperament")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        
+                                        Picker("Temperament", selection: $temperament) {
+                                                ForEach(Temperament.allCases) { temp in
+                                                        Text(temp.rawValue).tag(temp)
+                                                }
+                                        }
+                                        .pickerStyle(.menu)
+                                        .frame(minWidth: 200)
+                                }
+                                
+                                Button(action: { showTemperamentConfig = true }) {
+                                        Label("Configure", systemImage: "slider.horizontal.3")
                                 }
                                 .buttonStyle(.bordered)
                                 
-                                Picker("Steps", selection: $incrementSteps) {
-                                        ForEach([1, 2, 3, 12], id: \ .self) { value in
-                                                Text("\(value)").tag(value)
-                                        }
+                                Picker("Units", selection: $deviationUnit) {
+                                        Text("Cents").tag(DeviationUnit.cents)
+                                        Text("Pythagorean").tag(DeviationUnit.pythagorean)
                                 }
                                 .pickerStyle(.segmented)
-                                .frame(maxWidth: 180)
-                                
-                                Button { /* TODO: increment note */ } label: {
-                                        Image(systemName: "chevron.right.circle.fill").font(.largeTitle)
-                                }
-                                .buttonStyle(.bordered)
+                                .frame(width: 160)
                         }
                         
-                        // Temperament & config
-                        VStack(alignment: .leading, spacing: 8) {
-                                Picker("Temperament", selection: $temperament) {
-                                        ForEach(Temperament.allCases) { temp in
-                                                Text(temp.rawValue).tag(temp)
+                        // Partial and A440 controls
+                        HStack(spacing: 40) {
+                                // Partial selector
+                                VStack(spacing: 8) {
+                                        Text("Partial")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        
+                                        HStack(spacing: 12) {
+                                                Button(action: { partialIndex = max(1, partialIndex - 1) }) {
+                                                        Image(systemName: "minus.circle.fill")
+                                                                .font(.title2)
+                                                }
+                                                .buttonStyle(.borderless)
+                                                .disabled(partialIndex <= 1)
+                                                
+                                                Text("\(partialIndex)")
+                                                        .font(.title2)
+                                                        .monospacedDigit()
+                                                        .frame(minWidth: 30)
+                                                
+                                                Button(action: { partialIndex += 1 }) {
+                                                        Image(systemName: "plus.circle.fill")
+                                                                .font(.title2)
+                                                }
+                                                .buttonStyle(.borderless)
                                         }
                                 }
-                                .pickerStyle(.menu)
                                 
-                                Button("Configure Temperament…") {
-                                        // TODO: Show temperament configuration sheet
-                                }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        // Partial selection row
-                        HStack(spacing: 12) {
-                                Button { partialIndex = max(1, partialIndex - 1) } label: {
-                                        Image(systemName: "minus.circle.fill").font(.title2)
-                                }
-                                Text("Partial \(partialIndex)")
-                                Button { partialIndex += 1 } label: {
-                                        Image(systemName: "plus.circle.fill").font(.title2)
-                                }
-                        }
-                        
-                        // A440 fine tune row
-                        HStack(spacing: 12) {
-                                Button { a440 -= 0.01 } label: {
-                                        Image(systemName: "minus.circle.fill").font(.title2)
-                                }
-                                Text(String(format: "A440: %.2f Hz", a440))
-                                Button { a440 += 0.01 } label: {
-                                        Image(systemName: "plus.circle.fill").font(.title2)
+                                // A440 fine tuning
+                                VStack(spacing: 8) {
+                                        Text("Reference Pitch")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        
+                                        HStack(spacing: 12) {
+                                                Button(action: { a440 -= 0.01 }) {
+                                                        Image(systemName: "minus.circle.fill")
+                                                                .font(.title2)
+                                                }
+                                                .buttonStyle(.borderless)
+                                                
+                                                Text(String(format: "%.2f Hz", a440))
+                                                        .font(.title3)
+                                                        .monospacedDigit()
+                                                        .frame(minWidth: 80)
+                                                
+                                                Button(action: { a440 += 0.01 }) {
+                                                        Image(systemName: "plus.circle.fill")
+                                                                .font(.title2)
+                                                }
+                                                .buttonStyle(.borderless)
+                                        }
                                 }
                         }
                 }
-                .font(.body)
                 .padding()
+                .sheet(isPresented: $showTemperamentConfig) {
+                        TemperamentConfigView(
+                                temperament: $temperament,
+                                deviationUnit: $deviationUnit
+                        )
+                }
+        }
+        
+        // Helper functions
+        private func incrementNote() {
+                // TODO: Implement note increment logic based on incrementSteps
+        }
+        
+        private func decrementNote() {
+                // TODO: Implement note decrement logic based on incrementSteps
+        }
+}
+
+// MARK: – Supporting types
+enum DeviationUnit: String, CaseIterable {
+        case cents = "Cents"
+        case pythagorean = "Pythagorean Commas"
+}
+
+// MARK: – Temperament Configuration View
+struct TemperamentConfigView: View {
+        @Binding var temperament: Temperament
+        @Binding var deviationUnit: DeviationUnit
+        @Environment(\.dismiss) var dismiss
+        
+        var body: some View {
+                NavigationView {
+                        VStack {
+                                Text("Temperament Configuration")
+                                        .font(.largeTitle)
+                                        .padding()
+                                
+                                // TODO: Implement temperament configuration interface
+                                Text("Custom temperament configuration coming soon...")
+                                        .foregroundColor(.secondary)
+                                        .padding()
+                                
+                                Spacer()
+                        }
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                        Button("Done") { dismiss() }
+                                }
+                        }
+                }
         }
 }

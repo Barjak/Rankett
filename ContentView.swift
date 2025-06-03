@@ -36,7 +36,6 @@ struct ContentView: View {
                                 StudyView(study: study)
                                         .background(Color.black)
                                         .frame(
-                                                maxWidth: .infinity,
                                                 minHeight: geo.size.height * layout.studyHeightFraction,
                                                 maxHeight: layout.maxPanelHeight ?? geo.size.height * layout.studyHeightFraction
                                         )
@@ -378,5 +377,5 @@ struct ContentView: View {
                                 }
                         }
                 }
-        }       // Keep the Note struct and other supporting types from the previous response...
+        } 
 }

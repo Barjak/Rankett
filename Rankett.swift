@@ -23,7 +23,7 @@ struct SpectrumAnalyzerApp: App {
                 WindowGroup {
                         ContentView()
                                 .preferredColorScheme(.dark)
-                                .environment(\.layoutParameters, layoutParameters)  // Use the computed property
+                                .environment(\.layoutParameters, layoutParameters)
                 }
         }
         
@@ -32,9 +32,7 @@ struct SpectrumAnalyzerApp: App {
                 var params = LayoutParameters()
                 
 #if os(iOS)
-                if UIDevice.current.userInterfaceIdiom == .pad {
-                        params.maxPanelHeight = 400  // Limit panel height on iPad
-                }
+// Nothing here yet
 #endif
                 
                 return params

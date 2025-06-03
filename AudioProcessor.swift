@@ -103,7 +103,9 @@ final class AudioProcessor: ObservableObject {
                 let window = UnsafeMutablePointer<Float>.allocate(capacity: size)
                 defer { window.deallocate() }
                 
-                var success: Bool = circularBuffer.getLatest(size: size, to: window)
+                let success = circularBuffer.getLatest(size: size, to: window)
+                guard success else { return nil }  // Check success!
+                
                 return Array(UnsafeBufferPointer(start: window, count: size))
         }
         

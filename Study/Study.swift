@@ -6,7 +6,7 @@ final class HPSProcessor {
         private let harmonicProfile: [Float]
         private let workspace: UnsafeMutablePointer<Float>
         
-        init(spectrumSize: Int, harmonicProfile: [Float] = [1.0, 0.8, 0.6, 0.4, 0.2]) {
+        init(spectrumSize: Int, harmonicProfile: [Float] = [1.0]) {
                 self.harmonicProfile = harmonicProfile
                 self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
         }
@@ -89,13 +89,17 @@ final class Study: ObservableObject {
 
         
         // Pre-allocated buffers
+        private let fftSetup: vDSP.FFT<DSPSplitComplex>
         private let fftSize: Int
         private let halfSize: Int
-        private let fftSetup: vDSP.FFT<DSPSplitComplex>
         private let realBuffer: UnsafeMutablePointer<Float>
         private let imagBuffer: UnsafeMutablePointer<Float>
         private let magnitudeBuffer: UnsafeMutablePointer<Float>
         private var splitComplex: DSPSplitComplex
+        
+        private let windowBuffer: UnsafeMutablePointer<Float>
+        private let windowedAudioBuffer: UnsafeMutablePointer<Float>
+
         
         // Pre-allocated working buffers
         private let denoisedBuffer: UnsafeMutablePointer<Float>
@@ -111,9 +115,6 @@ final class Study: ObservableObject {
         private let qrResultBuffer: UnsafeMutablePointer<Float>
         private let qrTvBuffer: UnsafeMutablePointer<Float>
         
-        // Peak tracking
-        private var previousPeakPositions: [Int: (x: Float, y: Float)] = [:]
-        private let peakPositionAlpha: Float = 0.7
         
         // Published target buffers for StudyView
         @Published var targetOriginalSpectrum: [Float] = []
@@ -127,26 +128,25 @@ final class Study: ObservableObject {
         init(audioProcessor: AudioProcessor, config: AnalyzerConfig) {
                 self.audioProcessor = audioProcessor
                 self.config = config
-                
-                
-                // Pre-allocate FFT buffers
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
-                let harmonicProfile: [Float] = [1.0]
-                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: harmonicProfile)
+                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [1.0])
                 
-                
+                // Create FFT setup
                 let log2n = vDSP_Length(log2(Float(fftSize)))
                 guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {
                         fatalError("Failed to create FFT setup")
                 }
                 self.fftSetup = setup
                 
-                // Allocate all buffers
+                // Allocate FFT buffers
                 self.realBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.imagBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.magnitudeBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.splitComplex = DSPSplitComplex(realp: realBuffer, imagp: imagBuffer)
+                self.windowBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
+                self.windowedAudioBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
+                
                 
                 self.denoisedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 self.frequencyBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
@@ -171,6 +171,8 @@ final class Study: ObservableObject {
                 
                 // Pre-compute frequency array once
                 generateFrequencyArray(into: frequencyBuffer, count: halfSize, sampleRate: Float(config.audio.sampleRate))
+                // Initialize window function (Blackman-Harris)
+                generateBlackmanHarrisWindow(into: windowBuffer, size: fftSize)
         }
         
         deinit {
@@ -185,6 +187,8 @@ final class Study: ObservableObject {
                 tempNoiseFloor.deallocate()
                 qrResultBuffer.deallocate()
                 qrTvBuffer.deallocate()
+                windowBuffer.deallocate()
+                windowedAudioBuffer.deallocate()
         }
         
         func start() {
@@ -198,6 +202,22 @@ final class Study: ObservableObject {
         
         func stop() {
                 isRunning = false
+        }
+        
+        private func generateBlackmanHarrisWindow(into buffer: UnsafeMutablePointer<Float>, size: Int) {
+                let a0: Float = 0.35875
+                let a1: Float = 0.48829
+                let a2: Float = 0.14128
+                let a3: Float = 0.01168
+                
+                for i in 0..<size {
+                        let n = Float(i)
+                        let N = Float(size - 1)
+                        let term1 = a1 * cos(2.0 * .pi * n / N)
+                        let term2 = a2 * cos(4.0 * .pi * n / N)
+                        let term3 = a3 * cos(6.0 * .pi * n / N)
+                        buffer[i] = a0 - term1 + term2 - term3
+                }
         }
         
         private func continuousStudyLoop() {
@@ -242,13 +262,19 @@ final class Study: ObservableObject {
                 }
                 
                 // 1️⃣  Pack real input -----------------------------------------------------
-                audioWindow.withUnsafeBufferPointer { windowPtr in
-                        memcpy(realBuffer, windowPtr.baseAddress!, halfSize * MemoryLayout<Float>.size)
+                audioWindow.withUnsafeBufferPointer { audioPtr in
+                        vDSP_vmul(audioPtr.baseAddress!, 1, windowBuffer, 1, windowedAudioBuffer, 1, vDSP_Length(fftSize))
                 }
-                memset(imagBuffer, 0, halfSize * MemoryLayout<Float>.size)
-                log("pack window", &checkpoint)
+                log("window application", &checkpoint)
                 
-                // 2️⃣  FFT (forward) -------------------------------------------------------
+                // 2️⃣ Pack real data into split complex format
+                // For real-to-complex FFT, we pack the real data into complex format
+                windowedAudioBuffer.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
+                        vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(halfSize))
+                }
+                log("pack to complex", &checkpoint)
+                
+                // 3️⃣ Forward FFT
                 fftSetup.forward(input: splitComplex, output: &splitComplex)
                 var scaleFactor: Float = 2.0 / Float(fftSize)
                 vDSP_vsmul(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(halfSize))
@@ -364,7 +390,7 @@ final class Study: ObservableObject {
                                            smoothingSigma: Float) {
                 let maxIterations = 10
                 let convergenceThreshold: Float = 1e-4
-                let bandwidthSemitones: Float = 12.0
+                let bandwidthSemitones: Float = 10.0
                 
                 // Copy previous noise floor as starting point
                 memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)

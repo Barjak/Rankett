@@ -18,40 +18,33 @@ final class HPSProcessor {
         func computeHPS(magnitudes: UnsafePointer<Float>,
                         count: Int,
                         sampleRate: Float) -> (fundamental: Float, hpsSpectrum: [Float]) {
-                // Initialize workspace
+                // Find spectral statistics
+                var meanMag: Float = 0
+                vDSP_meanv(magnitudes, 1, &meanMag, vDSP_Length(count))
+                
                 memset(workspace, 0, count * MemoryLayout<Float>.size)
                 
-                // For each potential fundamental
                 for i in 0..<(count / harmonicProfile.count) {
                         let fundamentalMag = magnitudes[i]
                         
-                        // Skip if fundamental is too weak
-                        guard fundamentalMag > 0.01 else { continue }
+                        // Compute adaptive weight based on SNR-like measure
+                        let snr = fundamentalMag / (meanMag + 1e-10)
+                        let adaptiveWeight = 1.0 - exp(-snr) // Exponential weighting
                         
-                        // Count how many harmonics are present above threshold
-                        var harmonicsPresent = 0
-                        var totalHarmonicEnergy: Float = 0
+                        // Apply weighted harmonic product
+                        workspace[i] = harmonicProfile[0] * fundamentalMag * adaptiveWeight
                         
-                        for (h, weight) in harmonicProfile.enumerated() {
-                                let harmonicNumber = h + 1
+                        for (h, weight) in harmonicProfile.enumerated().dropFirst() {
+                                let harmonicNumber = h + 2
                                 let harmonicIndex = i * harmonicNumber
                                 
                                 if harmonicIndex < count {
-                                        let harmonicMag = magnitudes[harmonicIndex]
-                                        // Check if harmonic is above threshold relative to fundamental
-                                        if harmonicMag > fundamentalMag * 0.1 {
-                                                harmonicsPresent += 1
-                                                totalHarmonicEnergy += weight * harmonicMag
-                                        }
+                                        // Scale harmonic contribution by fundamental strength
+                                        workspace[i] += weight * magnitudes[harmonicIndex] * adaptiveWeight
                                 }
                         }
-                        
-                        // Compute coherence score (0 to 1)
-                        let coherence = Float(harmonicsPresent) / Float(harmonicProfile.count)
-                        
-                        // Apply coherence-weighted sum
-                        workspace[i] = totalHarmonicEnergy * coherence * coherence
                 }
+                
                 
                 if !harmonicProfile.isEmpty {
                         var fundamentalWeight = harmonicProfile[0]
@@ -120,7 +113,6 @@ final class Study: ObservableObject {
         private var isFirstRun = true
         
         private let hpsProcessor: HPSProcessor
-
         
         // Pre-allocated buffers
         private let fftSetup: vDSP.FFT<DSPSplitComplex>
@@ -165,7 +157,7 @@ final class Study: ObservableObject {
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
                 self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [0.1, 0.2, 0.3, 0.35])
-                
+
                 // Create FFT setup
                 let log2n = vDSP_Length(log2(Float(fftSize)))
                 guard let setup = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else {

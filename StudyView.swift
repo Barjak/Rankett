@@ -273,7 +273,7 @@ final class StudyGraphView: UIView {
                 
                 // Draw vertical line at fundamental
                 ctx.setStrokeColor(UIColor.systemPurple.cgColor)
-                ctx.setLineWidth(2)
+                ctx.setLineWidth(0.3)
                 ctx.move(to: CGPoint(x: x, y: 0))
                 ctx.addLine(to: CGPoint(x: x, y: height))
                 ctx.strokePath()

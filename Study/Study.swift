@@ -6,7 +6,7 @@ final class HPSProcessor {
         private let harmonicProfile: [Float]
         private let workspace: UnsafeMutablePointer<Float>
         
-        init(spectrumSize: Int, harmonicProfile: [Float] = [1.0]) {
+        init(spectrumSize: Int, harmonicProfile: [Float] = [0.1, 0.2, 0.3, 0.35]) {
                 self.harmonicProfile = harmonicProfile
                 self.workspace = UnsafeMutablePointer<Float>.allocate(capacity: spectrumSize)
         }
@@ -18,7 +18,41 @@ final class HPSProcessor {
         func computeHPS(magnitudes: UnsafePointer<Float>,
                         count: Int,
                         sampleRate: Float) -> (fundamental: Float, hpsSpectrum: [Float]) {
-                // Initialize workspace with the fundamental weighted by first profile value
+                // Initialize workspace
+                memset(workspace, 0, count * MemoryLayout<Float>.size)
+                
+                // For each potential fundamental
+                for i in 0..<(count / harmonicProfile.count) {
+                        let fundamentalMag = magnitudes[i]
+                        
+                        // Skip if fundamental is too weak
+                        guard fundamentalMag > 0.01 else { continue }
+                        
+                        // Count how many harmonics are present above threshold
+                        var harmonicsPresent = 0
+                        var totalHarmonicEnergy: Float = 0
+                        
+                        for (h, weight) in harmonicProfile.enumerated() {
+                                let harmonicNumber = h + 1
+                                let harmonicIndex = i * harmonicNumber
+                                
+                                if harmonicIndex < count {
+                                        let harmonicMag = magnitudes[harmonicIndex]
+                                        // Check if harmonic is above threshold relative to fundamental
+                                        if harmonicMag > fundamentalMag * 0.1 {
+                                                harmonicsPresent += 1
+                                                totalHarmonicEnergy += weight * harmonicMag
+                                        }
+                                }
+                        }
+                        
+                        // Compute coherence score (0 to 1)
+                        let coherence = Float(harmonicsPresent) / Float(harmonicProfile.count)
+                        
+                        // Apply coherence-weighted sum
+                        workspace[i] = totalHarmonicEnergy * coherence * coherence
+                }
+                
                 if !harmonicProfile.isEmpty {
                         var fundamentalWeight = harmonicProfile[0]
                         vDSP_vsmul(magnitudes, 1, &fundamentalWeight, workspace, 1, vDSP_Length(count))
@@ -130,7 +164,7 @@ final class Study: ObservableObject {
                 self.config = config
                 self.fftSize = config.fft.size
                 self.halfSize = fftSize / 2
-                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [1.0])
+                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [0.1, 0.2, 0.3, 0.35])
                 
                 // Create FFT setup
                 let log2n = vDSP_Length(log2(Float(fftSize)))
@@ -390,7 +424,7 @@ final class Study: ObservableObject {
                                            smoothingSigma: Float) {
                 let maxIterations = 10
                 let convergenceThreshold: Float = 1e-4
-                let bandwidthSemitones: Float = 10.0
+                let bandwidthSemitones: Float = 5.0
                 
                 // Copy previous noise floor as starting point
                 memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)

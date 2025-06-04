@@ -3,10 +3,14 @@ import SwiftUI
 
 
 struct TuningControlsView: View {
-        @StateObject private var parameters = TuningParameterStore()
+        @ObservedObject var parameters: TuningParameterStore
         @State private var showingTemperamentModal = false
         @State private var showingInstrumentModal = false
         @State private var carouselSelection = 0
+        
+        init(parameters: TuningParameterStore) {
+                self._parameters = ObservedObject(wrappedValue: parameters)
+        }
         
         var body: some View {
                 VStack(spacing: 12) {

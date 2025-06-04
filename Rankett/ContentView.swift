@@ -1,85 +1,6 @@
 import Foundation
 import SwiftUI
 
-/*
- End correction algorithms:
- delta_e_naive(reference_length) "Naive"
- delta_e_rayleigh(a) "Rayleigh's Simple Rule-of-Thumb End Correction"
- delta_e_parvs(a) "PARVS Model End Correction"
- delta_e_levine_schwinger_series(a, k) "Levine & Schwinger Series Expansion #1"
- delta_e_morse_ingard(a, k) "Morse & Ingard First-Order Perturbation"
- delta_e_ingard_empirical(a, k) "Ingard’s Empirical Polynomial Fit"
- delta_e_nomura_tsukamoto(a, k) "Nomura & Tsukamoto Polynomial Fit"
- delta_e_flanged(a, k) "Levine & Schwinger Flanged Pipe Expansion"
- delta_e_partial_flange(a, Rf) "Partial Flange End Correction"
- delta_e_ingard_thick_wall(a, t) "Ingard’s Thick-Wall End Correction"
- delta_e_nakamura_ueda(a, t) "Nakamura & Ueda Semi-Empirical Thick-Wall Correction"
- delta_e_direct_numerical(a, k) "Direct Numerical Integration of Radiation Impedance (Stub)"
- */
-
-enum NoiseFloorMethod {
-        case quantileRegression
-}
-
-// WARNING: VERY MUCH IN FLUX
-struct AnalyzerConfig {
-        
-        // MARK: - Audio capture
-        struct Audio {
-                let sampleRate: Double = 44_100
-                let nyquistMultiplier: Double = 0.5
-                
-                var nyquistFrequency: Double { sampleRate * nyquistMultiplier }
-        }
-        
-        // MARK: - FFT / STFT
-        struct FFT {
-                let size: Int = 8192
-                let outputBinCount: Int = 512
-                let hopSize: Int = 512 * 8
-                var frequencyResolution: Double {
-                        Audio().sampleRate / Double(size)
-                }
-                var circularBufferSize: Int { size * 3 }
-        }
-        
-        // MARK: - Real-time rendering
-        struct Rendering {
-                let targetFPS: Double = 60
-                var frameInterval: TimeInterval { 1.0 / targetFPS }
-                
-                let smoothingFactor: Float = 0.7
-                let useLogFrequencyScale: Bool = true
-                let minFrequency: Double = 20
-                let maxFrequency: Double = 20_000
-        }
-        
-        // MARK: - Spectral peak detection
-        struct PeakDetection {
-                var minProminence: Float = 6.0
-                var minDistance: Int = 5
-                var minHeight: Float = -60.0
-                var prominenceWindow: Int = 50
-        }
-        
-        // MARK: - Noise-floor estimation
-        struct NoiseFloor {
-                var method: NoiseFloorMethod = .quantileRegression
-                var thresholdOffset: Float = 5.0
-                var quantile: Float = 0.02
-                var smoothingSigma: Float = 10
-        }
-        
-        var audio = Audio()
-        var fft = FFT()
-        var rendering = Rendering()
-        var peakDetection = PeakDetection()
-        var noiseFloor = NoiseFloor()
-        
-        static let `default` = AnalyzerConfig()
-}
-
-
 struct LayoutParameters {
         var studyHeightFraction: CGFloat = 0.4
         var minStudyHeightFraction: CGFloat = 0.25
@@ -119,78 +40,105 @@ struct SpectrumAnalyzerApp: App {
         }
 }
 struct ContentView: View {
-        // MARK: – Analysis engine
+        // ─────────── Shared Tuning Parameters ───────────
+        /// This store holds concert pitch, target pitch, end‐correction settings, temperament, etc.
+        @StateObject private var parameters = TuningParameterStore()
+        
+        // ─────────── Analysis Engine ───────────
+        /// AudioProcessor drives `parameters.actualPitch` (and hence `centsError`, `beatFrequency`, etc.)
         @StateObject private var audioProcessor: AudioProcessor
+        /// Study consumes the same `parameters` to compute whatever visualization values it needs
         @StateObject private var study: Study
-
-        @State private var phoneConnection: PhoneConnectionManager
         
-        // A simple string for current log message
-        @State private var debugText: String = ""
+        /// If you have a phone/watch forwarding object, tie it here:
+        @State private var phoneConnection = PhoneConnectionManager()
         
-        // MARK: – Layout & UI
+        // ─────────── Layout & UI Helpers ───────────
         @Environment(\.layoutParameters) private var layout: LayoutParameters
         @State private var isProcessing = false
-        @State private var controlsHeight: CGFloat = 0
         
-        
+        // Because we have three @StateObjects (parameters, audioProcessor, study),
+        // we must initialize them all in `init()` before calling any super initializer.
         init() {
-                // etc
+                // 1) Create the single TuningParameterStore
+                let store = TuningParameterStore()
+                _parameters = StateObject(wrappedValue: store)
+                
+                // 2) Instantiate AudioProcessor with that same store
+                //    (replace `parameterStore:` with your actual init if needed)
+                _audioProcessor = StateObject(
+                        wrappedValue: AudioProcessor(parameterStore: store)
+                )
+                
+                // 3) Instantiate Study with that same store
+                _study = StateObject(
+                        wrappedValue: Study(parameterStore: store)
+                )
+                
+                // 4) The phoneConnection can remain a plain @State
+                _phoneConnection = State(initialValue: PhoneConnectionManager())
         }
         
         var body: some View {
-                GeometryReader { geo in
-                        VStack(spacing: 0) {
-                                // ─────────── PLOTS ───────────
-                                StudyView(study: study)
-                                        .background(Color.black)
-                                        .frame(
-                                                minHeight: geo.size.height * layout.studyHeightFraction,
-                                                maxHeight: layout.maxPanelHeight ?? geo.size.height * layout.studyHeightFraction
-                                        )
-                                        .layoutPriority(1)
-                                
-                                // ────────── CONTROLS ─────────
-                                TuningControlsView(
-                                        // TODO: Implement
-                                )
-                                .background(Color(uiColor: .secondarySystemBackground))
-                                .frame(maxWidth: 640)
-                                .padding(.vertical)
+                NavigationView {
+                        GeometryReader { geo in
+                                VStack(spacing: 0) {
+                                        // ─────────── PLOTS ───────────
+                                        // Pass the `study` wrapper in—any visualization that needs audio data
+                                        // comes from `study`, which itself is reading from `parameters`.
+                                        StudyView(study: study)
+                                                .background(Color.black)
+                                                .frame(
+                                                        minHeight: geo.size.height * layout.studyHeightFraction,
+                                                        maxHeight: layout.maxPanelHeight
+                                                        ?? (geo.size.height * layout.studyHeightFraction)
+                                                )
+                                                .layoutPriority(1)
+                                        
+                                        // ────────── CONTROLS ─────────
+                                        // The `TuningControlsView` will now read/write directly against
+                                        // our shared `parameters` object.
+                                        TuningControlsView(parameters: parameters)
+                                                .background(Color(uiColor: .secondarySystemBackground))
+                                                .frame(maxWidth: 640)
+                                                .padding(.vertical)
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .onAppear {
-                        self.startProcessing()
-                }
-                .onDisappear {
-                        self.stopProcessing()
-                }
-                .navigationTitle("Spectrum Analyzer")
+                        .onAppear {
+                                startProcessing()
+                        }
+                        .onDisappear {
+                                stopProcessing()
+                        }
+                        .navigationTitle("Spectrum Analyzer")
 #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
+                        .navigationBarTitleDisplayMode(.inline)
 #endif
+                }
         }
         
-        // MARK: – Engine control helpers
-        private func stopProcessing() {
-                // etc
-        }
-        
-        private func toggleProcessing() {
-                // etc
-        }
-        
+        // ─────────── Engine Control Helpers ───────────
         private func startProcessing() {
                 audioProcessor.start()
                 study.start()
                 
-                watchForwarder.getReady()
-                watchForwarder.startSendFramesLoop(every: 0.1, { // Every 0.1 seconds}
-                        // return watchPacket(study.getValue1())
-                })
+                // Example: start sending data to watch every 0.1s
+                phoneConnection.getReady()
+                phoneConnection.startSendFramesLoop(
+                        every: 0.1
+                ) {
+                        // Supply whatever packet you need, e.g.:
+                        // return watchPacket(study.currentValue)
+                }
                 
                 isProcessing = true
         }
         
+        private func stopProcessing() {
+                audioProcessor.stop()
+                study.stop()
+                phoneConnection.stopSendFramesLoop()
+                isProcessing = false
+        }
 }

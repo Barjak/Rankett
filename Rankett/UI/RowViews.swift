@@ -158,33 +158,8 @@ struct TargetPitchRow: View {
 
 // MARK: - Custom Button Style
 
-struct TuningButtonStyle: ButtonStyle {
-        @Environment(\.isEnabled) var isEnabled
-        
-        func makeBody(configuration: Configuration) -> some View {
-                configuration.label
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .frame(maxHeight: .infinity)
-                        .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                        .fill(configuration.isPressed ?
-                                              Color.accentColor.opacity(0.3) :
-                                                Color.accentColor.opacity(0.2))
-                        )
-                        .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.accentColor, lineWidth: 1)
-                        )
-                        .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-                        .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
-                        .opacity(isEnabled ? 1.0 : 0.6)
-        }
-}
-
 //struct TuningButtonStyle: ButtonStyle {
 //        @Environment(\.isEnabled) var isEnabled
-//        var supportsLongPress: Bool = false
 //        
 //        func makeBody(configuration: Configuration) -> some View {
 //                configuration.label
@@ -198,30 +173,55 @@ struct TuningButtonStyle: ButtonStyle {
 //                                                Color.accentColor.opacity(0.2))
 //                        )
 //                        .overlay(
-//                                ZStack {
-//                                        RoundedRectangle(cornerRadius: 8)
-//                                                .stroke(Color.accentColor, lineWidth: 1)
-//                                        
-//                                        if supportsLongPress {
-//                                                // Small indicator in corner
-//                                                VStack {
-//                                                        HStack {
-//                                                                Spacer()
-//                                                                Circle()
-//                                                                        .fill(Color.accentColor)
-//                                                                        .frame(width: 6, height: 6)
-//                                                                        .padding(4)
-//                                                        }
-//                                                        Spacer()
-//                                                }
-//                                        }
-//                                }
+//                                RoundedRectangle(cornerRadius: 8)
+//                                        .stroke(Color.accentColor, lineWidth: 1)
 //                        )
 //                        .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
 //                        .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
 //                        .opacity(isEnabled ? 1.0 : 0.6)
 //        }
 //}
+
+struct TuningButtonStyle: ButtonStyle {
+        @Environment(\.isEnabled) var isEnabled
+        var supportsLongPress: Bool = false
+        
+        func makeBody(configuration: Configuration) -> some View {
+                configuration.label
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(maxHeight: .infinity)
+                        .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                        .fill(configuration.isPressed ?
+                                              Color.accentColor.opacity(0.3) :
+                                                Color.accentColor.opacity(0.2))
+                        )
+                        .overlay(
+                                ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                                .stroke(Color.accentColor, lineWidth: 1)
+                                        
+                                        if supportsLongPress {
+                                                // Small indicator in corner
+                                                VStack {
+                                                        HStack {
+                                                                Spacer()
+                                                                Circle()
+                                                                        .fill(Color.accentColor)
+                                                                        .frame(width: 6, height: 6)
+                                                                        .padding(4)
+                                                        }
+                                                        Spacer()
+                                                }
+                                        }
+                                }
+                        )
+                        .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+                        .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+                        .opacity(isEnabled ? 1.0 : 0.6)
+        }
+}
 
 
 // MARK: - Concert Pitch Row

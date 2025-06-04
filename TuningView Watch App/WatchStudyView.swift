@@ -6,15 +6,17 @@ final class WatchStudyModel: NSObject, ObservableObject, WCSessionDelegate {
         @Published var lastUpdateTime: Date? = nil
         @Published var isConnected: Bool = false
         
+        private var updateCount = 0
+        private var messageCount = 0
+        
         override init() {
                 super.init()
                 if WCSession.isSupported() {
                         let session = WCSession.default
                         session.delegate = self
                         session.activate()
-                        print("✅ Watch: WCSession setup initiated")
-                } else {
-                        print("❌ Watch: WCSession not supported")
+                        
+                        print("✅ Watch: WCSession setup with main queue")
                 }
         }
         
@@ -33,52 +35,49 @@ final class WatchStudyModel: NSObject, ObservableObject, WCSessionDelegate {
         }
         
         // Handle updateApplicationContext (preferred for streaming data)
-        func session(_ session: WCSession,
-                     didReceiveApplicationContext applicationContext: [String : Any])
-        {
-                print("📥 Watch: Received context update")
-                processUpdate(applicationContext)
+        func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
+                messageCount += 1
+                print("📨 Watch: Received MESSAGE #\(messageCount) at \(Date())")
+                processUpdate(message, source: "message")
         }
         
-        // Handle sendMessage (fallback for when app is active)
-        func session(_ session: WCSession,
-                     didReceiveMessage message: [String : Any])
-        {
-                print("📥 Watch: Received message")
-                processUpdate(message)
+        // Handle updateApplicationContext (state sync)
+        func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
+                updateCount += 1
+                print("📦 Watch: Received CONTEXT #\(updateCount) at \(Date())")
+                processUpdate(applicationContext, source: "context")
         }
         
-        private func processUpdate(_ data: [String: Any]) {
-                if let fundamental = data["fundamental"] as? Float,
-                   let timestamp = data["timestamp"] as? TimeInterval {
-                        
-                        // 1. Recreate the Date from the TimeInterval (seconds since 1970)
-                        let updateTime = Date(timeIntervalSince1970: timestamp)
-                        
-                        // 2. Format `updateTime` so it shows milliseconds
-                        let dateFormatter = DateFormatter()
-                        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"  // ".SSS" = milliseconds
-                        let updateTimeString = dateFormatter.string(from: updateTime)
-                        
-                        // 3. Compute latency in milliseconds
-                        let latency = Date().timeIntervalSince(updateTime) * 1000
-                        
-                        // 4. Print everything
-                        print(
-                                "🎵 Watch: Fundamental: \(String(format: "%.2f", fundamental)) Hz " +
-                                "at \(updateTimeString), Latency: \(String(format: "%.1f", latency)) ms"
-                        )
-                        
-                        DispatchQueue.main.async {
-                                self.latestFundamental = fundamental
-                                self.lastUpdateTime = updateTime
-                        }
+        private func processUpdate(_ data: [String: Any], source: String) {
+                guard let fundamental = data["fundamental"] as? Float,
+                      let timestamp = data["timestamp"] as? TimeInterval else {
+                        print("❌ Watch: Invalid data from \(source)")
+                        return
+                }
+                
+                let receiveTime = Date()
+                let updateTime = Date(timeIntervalSince1970: timestamp)
+                let latency = receiveTime.timeIntervalSince(updateTime) * 1000
+                
+                let dateFormatter = DateFormatter()
+                dateFormatter.dateFormat = "HH:mm:ss.SSS"
+                
+                print("🎵 Watch [\(source)]: \(String(format: "%.2f", fundamental)) Hz")
+                print("   Sent: \(dateFormatter.string(from: updateTime))")
+                print("   Recv: \(dateFormatter.string(from: receiveTime))")
+                print("   Latency: \(String(format: "%.1f", latency)) ms")
+                
+                // Update UI immediately on main thread
+                DispatchQueue.main.async { [weak self] in
+                        self?.latestFundamental = fundamental
+                        self?.lastUpdateTime = updateTime
                 }
         }
 }
 
 struct WatchStudyView: View {
         @StateObject private var model = WatchStudyModel()
+        @State private var idleTimer: Timer?
         
         private static let dateFormatter: DateFormatter = {
                 let df = DateFormatter()
@@ -117,5 +116,20 @@ struct WatchStudyView: View {
                         .foregroundColor(model.isConnected ? .green : .red)
                 }
                 .padding()
+                .onAppear {
+                        // Prevent the watch from sleeping
+                        WKExtension.shared().isAutorotating = false
+                        
+                        // Keep the screen on by updating something periodically
+                        idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+                                // This keeps the app active
+                                WKInterfaceDevice.current().play(.click)
+                        }
+                }
+                .onDisappear {
+                        idleTimer?.invalidate()
+                }
         }
+        
+        
 }

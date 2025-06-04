@@ -1,28 +1,29 @@
 import Foundation
 import SwiftUI
 
-
-
-
 struct ContentView: View {
         // MARK: – Analysis engine
         @StateObject private var audioProcessor: AudioProcessor
         @StateObject private var study: Study
+        
+        /// We keep `watchForwarder` as a plain @State optional, because we only create it once `startProcessing()` is called.
         @State private var watchForwarder: WatchForwarder?
-
+        
+        // A simple string that accumulates all log lines:
+        @State private var debugText: String = ""
+        
         // MARK: – Layout & UI
         @Environment(\.layoutParameters) private var layout: LayoutParameters
         @State private var isProcessing = false
         @State private var controlsHeight: CGFloat = 0
         
-        // MARK: – Tuning state (UI‑only placeholders)
-        @State private var targetedNote: String = "A4"           // Current centre note
-        @State private var incrementSteps: Int = 1                // How many semitones per tap
-        @State private var temperament: Temperament = .equal      // Chosen temperament
-        @State private var partialIndex: Int = 1                  // Which harmonic partial
-        @State private var a440: Double = 440.00                  // Reference pitch
+        // MARK: – Tuning state (UI-only placeholders)
+        @State private var targetedNote: String = "A4"
+        @State private var incrementSteps: Int = 1
+        @State private var temperament: Temperament = .equal
+        @State private var partialIndex: Int = 1
+        @State private var a440: Double = 440.00
         
-
         init() {
                 let config = AnalyzerConfig.default
                 let processor = AudioProcessor(config: config)
@@ -56,17 +57,27 @@ struct ContentView: View {
                                 .background(Color(uiColor: .secondarySystemBackground))
                                 .frame(maxWidth: 640)
                                 .padding(.vertical)
+                                
+                                // ────────── DEBUG LOG ─────────
+                                Divider().padding(.top, 8)
+                                
+                                ScrollView {
+                                        // Show every line of debugText in a fixed-width font
+                                        Text(debugText)
+                                                .font(.system(.body, design: .monospaced))
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(8)
+                                }
+                                .background(Color(UIColor.systemGray6))
+                                .frame(maxHeight: 200) // or whatever “debug pane” height you like
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .onAppear {
                         self.startProcessing()
-                        
-
                 }
                 .onDisappear {
                         self.stopProcessing()
-
                 }
                 .navigationTitle("Spectrum Analyzer")
 #if os(iOS)
@@ -81,6 +92,7 @@ struct ContentView: View {
                 watchForwarder = nil
                 isProcessing = false
         }
+        
         private func toggleProcessing() {
                 if isProcessing {
                         self.stopProcessing()
@@ -93,28 +105,35 @@ struct ContentView: View {
         private func startProcessing() {
                 audioProcessor.start()
                 study.start()
-                watchForwarder = WatchForwarder(study: study)
+                
+                // Create a new WatchForwarder, passing in a closure that appends logs to `debugText`.
+                watchForwarder = WatchForwarder(study: study) { newLine in
+                        // Always dispatch back to the main thread, because Combine/WatchConnectivity callbacks can come on arbitrary queues.
+                        DispatchQueue.main.async {
+                                // Append the new line, plus a newline character.
+                                debugText = newLine + "\n"
+                        }
+                }
+                
                 isProcessing = true
         }
         
         private func autoTune() {
-                // TODO: Implement auto‑tune logic when back‑end is in place.
+                // TODO: Implement auto-tune logic when back-end is in place.
         }
         
-        
         // MARK: – Supporting types
+        
         enum Temperament: String, CaseIterable, Identifiable {
                 case equal = "Equal"
                 case neidhardt = "Neidhardt"
-                case quarterCommaMeantone = "Quarter‑comma Meantone"
+                case quarterCommaMeantone = "Quarter-comma Meantone"
                 case kleineStadt = "Kleine Stadt"
-                // Add more temperaments as required
                 var id: String { rawValue }
         }
         
         // MARK: - Updated TuningControlsView with fat-finger friendly controls
         struct TuningControlsView: View {
-                // Bindings from parent view
                 @Binding var targetedNote: String
                 @Binding var incrementSteps: Int
                 @Binding var temperament: Temperament
@@ -122,16 +141,13 @@ struct ContentView: View {
                 @Binding var a440: Double
                 @Binding var isProcessing: Bool
                 
-                // Additional state
                 @State private var showTemperamentConfig = false
                 @State private var deviationUnit: DeviationUnit = .cents
                 
-                // Callbacks
                 var startStopAction: () -> Void
                 var autoTuneAction: () -> Void
                 
-                // Button sizing
-                private let buttonSize: CGFloat = 44  // Apple's recommended minimum touch target
+                private let buttonSize: CGFloat = 44
                 private let largeButtonSize: CGFloat = 52
                 
                 private var currentNote: Note {
@@ -168,14 +184,11 @@ struct ContentView: View {
                                 
                                 // Note display and controls
                                 VStack(spacing: 8) {
-                                        // Large note display
                                         Text(targetedNote)
                                                 .font(.system(size: 56, weight: .bold, design: .rounded))
                                                 .frame(height: 60)
                                         
-                                        // Note controls with semitone and octave buttons
                                         HStack(spacing: 8) {
-                                                // Octave down
                                                 Button(action: { adjustNote(by: -12) }) {
                                                         Image(systemName: "chevron.left.2")
                                                                 .font(.title2)
@@ -183,7 +196,6 @@ struct ContentView: View {
                                                 .buttonStyle(.bordered)
                                                 .frame(width: largeButtonSize, height: largeButtonSize)
                                                 
-                                                // Semitone down
                                                 Button(action: decrementNote) {
                                                         Image(systemName: "minus.circle.fill")
                                                                 .font(.title)
@@ -191,7 +203,6 @@ struct ContentView: View {
                                                 .buttonStyle(.bordered)
                                                 .frame(width: largeButtonSize, height: largeButtonSize)
                                                 
-                                                // Step selector
                                                 VStack(spacing: 2) {
                                                         Text("Step")
                                                                 .font(.caption2)
@@ -206,7 +217,6 @@ struct ContentView: View {
                                                         .frame(width: 140)
                                                 }
                                                 
-                                                // Semitone up
                                                 Button(action: incrementNote) {
                                                         Image(systemName: "plus.circle.fill")
                                                                 .font(.title)
@@ -214,7 +224,6 @@ struct ContentView: View {
                                                 .buttonStyle(.bordered)
                                                 .frame(width: largeButtonSize, height: largeButtonSize)
                                                 
-                                                // Octave up
                                                 Button(action: { adjustNote(by: 12) }) {
                                                         Image(systemName: "chevron.right.2")
                                                                 .font(.title2)
@@ -268,7 +277,6 @@ struct ContentView: View {
                                 
                                 // Bottom row: Partial and A440
                                 HStack(spacing: 32) {
-                                        // Partial controls
                                         VStack(spacing: 4) {
                                                 Text("Partial")
                                                         .font(.caption)
@@ -295,7 +303,6 @@ struct ContentView: View {
                                                 }
                                         }
                                         
-                                        // A440 controls
                                         VStack(spacing: 4) {
                                                 Text("Reference")
                                                         .font(.caption)
@@ -344,50 +351,49 @@ struct ContentView: View {
                         let note = currentNote.transposed(by: semitones)
                         targetedNote = note.displayName
                 }
-        }
-        
- 
-        // MARK: - Supporting types
-        enum DeviationUnit: String, CaseIterable {
-                case cents = "Cents"
-                case pythagorean = "Pythagorean Commas"
-        }
-        
-        // MARK: - Temperament Configuration View
-        struct TemperamentConfigView: View {
-                @Binding var temperament: Temperament
-                @Binding var deviationUnit: DeviationUnit
-                @Environment(\.dismiss) var dismiss
                 
-                var body: some View {
-                        NavigationView {
-                                Form {
-                                        Section("Temperament Selection") {
-                                                Picker("Temperament", selection: $temperament) {
-                                                        ForEach(Temperament.allCases) { temp in
-                                                                Text(temp.rawValue).tag(temp)
+                // MARK: – Supporting types
+                enum DeviationUnit: String, CaseIterable {
+                        case cents = "Cents"
+                        case pythagorean = "Pythagorean Commas"
+                }
+                
+                // MARK: – Temperament Configuration View
+                struct TemperamentConfigView: View {
+                        @Binding var temperament: Temperament
+                        @Binding var deviationUnit: DeviationUnit
+                        @Environment(\.dismiss) var dismiss
+                        
+                        var body: some View {
+                                NavigationView {
+                                        Form {
+                                                Section("Temperament Selection") {
+                                                        Picker("Temperament", selection: $temperament) {
+                                                                ForEach(Temperament.allCases) { temp in
+                                                                        Text(temp.rawValue).tag(temp)
+                                                                }
                                                         }
                                                 }
-                                        }
-                                        
-                                        Section("Deviation Units") {
-                                                Picker("Units", selection: $deviationUnit) {
-                                                        Text("Cents").tag(DeviationUnit.cents)
-                                                        Text("Pythagorean Commas").tag(DeviationUnit.pythagorean)
+                                                
+                                                Section("Deviation Units") {
+                                                        Picker("Units", selection: $deviationUnit) {
+                                                                Text("Cents").tag(DeviationUnit.cents)
+                                                                Text("Pythagorean Commas").tag(DeviationUnit.pythagorean)
+                                                        }
+                                                        .pickerStyle(.segmented)
                                                 }
-                                                .pickerStyle(.segmented)
+                                                
+                                                Section("Custom Temperament") {
+                                                        Text("Custom temperament configuration coming soon...")
+                                                                .foregroundColor(.secondary)
+                                                }
                                         }
-                                        
-                                        Section("Custom Temperament") {
-                                                Text("Custom temperament configuration coming soon...")
-                                                        .foregroundColor(.secondary)
-                                        }
-                                }
-                                .navigationTitle("Temperament Configuration")
-                                .navigationBarTitleDisplayMode(.inline)
-                                .toolbar {
-                                        ToolbarItem(placement: .confirmationAction) {
-                                                Button("Done") { dismiss() }
+                                        .navigationTitle("Temperament Configuration")
+                                        .navigationBarTitleDisplayMode(.inline)
+                                        .toolbar {
+                                                ToolbarItem(placement: .confirmationAction) {
+                                                        Button("Done") { dismiss() }
+                                                }
                                         }
                                 }
                         }

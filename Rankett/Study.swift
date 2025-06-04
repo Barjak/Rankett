@@ -266,46 +266,35 @@ final class Study: ObservableObject {
                                         self?.targetHPSFundamental = result.hpsFundamental
                                 }
                         }
+                        Thread.sleep(forTimeInterval: 0.005)  // ~200 Hz max update rate
                 }
         }
         
         // MARK: - Main Analysis
         fileprivate func perform(audioWindow: [Float]) -> StudyResult {
-                // ───── helpers ───────────────────────────────────────────────────────────
-                @inline(__always)
-                func log(_ label: String, _ last: inout CFAbsoluteTime) {
-                        let now = CFAbsoluteTimeGetCurrent()
-                        print("[Study] \(label): \(String(format: "%.3f", (now - last) * 1_000)) ms")
-                        last = now
-                }
-                // ─────────────────────────────────────────────────────────────────────────
-                
+
                 let overallStart = CFAbsoluteTimeGetCurrent()
                 var checkpoint   = overallStart
                 defer {
                         let total = (CFAbsoluteTimeGetCurrent() - overallStart) * 1_000
-                        print("[Study] perform(total): \(String(format: "%.3f", total)) ms\n")
                 }
                 
                 // 1️⃣  Pack real input -----------------------------------------------------
                 audioWindow.withUnsafeBufferPointer { audioPtr in
                         vDSP_vmul(audioPtr.baseAddress!, 1, windowBuffer, 1, windowedAudioBuffer, 1, vDSP_Length(fftSize))
                 }
-                log("window application", &checkpoint)
                 
                 // 2️⃣ Pack real data into split complex format
                 // For real-to-complex FFT, we pack the real data into complex format
                 windowedAudioBuffer.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
                         vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(halfSize))
                 }
-                log("pack to complex", &checkpoint)
                 
                 // 3️⃣ Forward FFT
                 fftSetup.forward(input: splitComplex, output: &splitComplex)
                 var scaleFactor: Float = 2.0 / Float(fftSize)
                 vDSP_vsmul(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(halfSize))
                 vDSP_zvmags(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(halfSize))
-                log("fft & magnitude", &checkpoint)
                 
                 // 3️⃣  Convert to dB -------------------------------------------------------
                 var floor: Float    = 1e-10
@@ -313,7 +302,6 @@ final class Study: ObservableObject {
                 vDSP_vclip(magnitudeBuffer, 1, &floor, &ceiling, magnitudeBuffer, 1, vDSP_Length(halfSize))
                 var reference: Float = 1.0
                 vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
-                log("to dB", &checkpoint)
                 
                 // 4️⃣  Noise‑floor estimation --------------------------------------------
                 if isFirstRun {
@@ -332,7 +320,6 @@ final class Study: ObservableObject {
                 vDSP_vsmul(previousNoiseFloor, 1, &oneMinusAlpha, previousNoiseFloor, 1, vDSP_Length(halfSize))
                 vDSP_vadd(tempNoiseFloor, 1, previousNoiseFloor, 1, currentNoiseFloor, 1, vDSP_Length(halfSize))
                 memcpy(previousNoiseFloor, currentNoiseFloor, halfSize * MemoryLayout<Float>.size)
-                log("noise‑floor", &checkpoint)
                 
                 // 5️⃣  Denoise spectrum ---------------------------------------------------
                 denoiseSpectrum(
@@ -341,7 +328,6 @@ final class Study: ObservableObject {
                         output:       denoisedBuffer,
                         count:        halfSize
                 )
-                log("denoise", &checkpoint)
                 
                 // 6️⃣  Harmonic Product Spectrum -----------------------------------------
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
@@ -349,7 +335,6 @@ final class Study: ObservableObject {
                         count:      halfSize,
                         sampleRate: Float(config.audio.sampleRate)
                 )
-                log("hps", &checkpoint)
                 
                 
                 // 8️⃣  Package results ----------------------------------------------------
@@ -357,7 +342,6 @@ final class Study: ObservableObject {
                 let noiseFloor   = Array(UnsafeBufferPointer(start: currentNoiseFloor, count: halfSize))
                 let denoised     = Array(UnsafeBufferPointer(start: denoisedBuffer,   count: halfSize))
                 let frequencies  = Array(UnsafeBufferPointer(start: frequencyBuffer,  count: halfSize))
-                log("package result", &checkpoint)
                 
                 return StudyResult(
                         originalSpectrum:  magnitudesDB,

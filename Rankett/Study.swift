@@ -155,7 +155,7 @@ final class Study: ObservableObject {
         init(audioProcessor: AudioProcessor, store: TuningParameterStore) {
                 self.audioProcessor = audioProcessor
                 self.store = store
-                self.fftSize = parameters.fftSize
+                self.fftSize = store.fftSize
                 self.halfSize = fftSize / 2
                 self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [0.1, 0.2, 0.3, 0.35])
 
@@ -197,7 +197,7 @@ final class Study: ObservableObject {
                 qrTvBuffer.initialize(repeating: 0, count: halfSize)
                 
                 // Pre-compute frequency array once
-                generateFrequencyArray(into: frequencyBuffer, count: halfSize, sampleRate: Float(config.audio.sampleRate))
+                generateFrequencyArray(into: frequencyBuffer, count: halfSize, sampleRate: Float(store.audioSampleRate))
                 // Initialize window function (Blackman-Harris)
                 generateBlackmanHarrisWindow(into: windowBuffer, size: fftSize)
         }
@@ -251,7 +251,7 @@ final class Study: ObservableObject {
                 while isRunning {
                         autoreleasepool {
                                 // Get the latest window
-                                guard let audioWindow = audioProcessor.getWindow(size: config.fft.size) else {
+                                guard let audioWindow = audioProcessor.getWindow(size: store.fftSize) else {
                                         Thread.sleep(forTimeInterval: 0.001)
                                         return
                                 }
@@ -313,7 +313,7 @@ final class Study: ObservableObject {
                         magnitudesDB: magnitudeBuffer,
                         frequencies: frequencyBuffer,
                         count: halfSize,
-                        config: config.noiseFloor
+                        store: store
                 )
                 var alpha: Float         = noiseFloorAlpha
                 var oneMinusAlpha: Float = 1 - noiseFloorAlpha
@@ -334,7 +334,7 @@ final class Study: ObservableObject {
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
                         magnitudes: denoisedBuffer,
                         count:      halfSize,
-                        sampleRate: Float(config.audio.sampleRate)
+                        sampleRate: Float(store.audioSampleRate)
                 )
                 
                 
@@ -377,7 +377,7 @@ final class Study: ObservableObject {
                                    count: Int,
                                    store: TuningParameterStore) {
                 
-                switch store.NoiseFloorMethod {
+                switch store.noiseMethod {
                 case .quantileRegression:
                         fitNoiseFloorQuantile(
                                 magnitudesDB: magnitudesDB,
@@ -389,7 +389,7 @@ final class Study: ObservableObject {
                 }
                 
                 // Apply threshold offset in-place
-                var offset = config.thresholdOffset
+                var offset = store.noiseThresholdOffset
                 vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
         }
         
@@ -445,7 +445,7 @@ final class Study: ObservableObject {
                                                    quantile: Float,
                                                    lambda: Float,
                                                    bandwidthSemitones: Float) {
-                let sampleRate = Float(config.audio.sampleRate)
+                let sampleRate = Float(store.audioSampleRate)
                 let binWidth = sampleRate / Float(fftSize)
                 
                 // Compute subgradients for quantile loss
@@ -492,7 +492,7 @@ final class Study: ObservableObject {
                                            output: UnsafeMutablePointer<Float>,
                                            count: Int,
                                            bandwidthSemitones: Float) {
-                let sampleRate = Float(config.audio.sampleRate)
+                let sampleRate = Float(store.audioSampleRate)
                 let binWidth = sampleRate / Float(fftSize)
                 
                 for i in 0..<count {

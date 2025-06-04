@@ -30,7 +30,7 @@ struct SpectrumAnalyzerApp: App {
         
         // Customize layout parameters based on device
         private var layoutParameters: LayoutParameters {
-                var params = LayoutParameters()
+                let params = LayoutParameters()
                 
 #if os(iOS)
                 // Nothing here yet
@@ -41,50 +41,42 @@ struct SpectrumAnalyzerApp: App {
 }
 struct ContentView: View {
         // ─────────── Shared Tuning Parameters ───────────
-        /// This store holds concert pitch, target pitch, end‐correction settings, temperament, etc.
         @StateObject private var store = TuningParameterStore()
         
         // ─────────── Analysis Engine ───────────
-        /// AudioProcessor drives `parameters.actualPitch` (and hence `centsError`, `beatFrequency`, etc.)
         @StateObject private var audioProcessor: AudioProcessor
-        /// Study consumes the same `parameters` to compute whatever visualization values it needs
         @StateObject private var study: Study
         
-        /// If you have a phone/watch forwarding object, tie it here:
-        @State private var phoneConnection = PhoneConnectionManager()
+        // ─────────── Connection State ───────────
+        @State private var connectionState: PhoneUIState = .searching
+        @State private var sendTimer: Timer?
         
         // ─────────── Layout & UI Helpers ───────────
         @Environment(\.layoutParameters) private var layout: LayoutParameters
         @State private var isProcessing = false
         
-        // Because we have three @StateObjects (parameters, audioProcessor, study),
-        // we must initialize them all in `init()` before calling any super initializer.
         init() {
-                // 1) Create the single TuningParameterStore
+                let store = TuningParameterStore()
                 _store = StateObject(wrappedValue: store)
                 
-                // 2) Instantiate AudioProcessor with that same store
-                //    (replace `parameterStore:` with your actual init if needed)
-                _audioProcessor = StateObject(
-                        wrappedValue: AudioProcessor(store: store)
-                )
+                let audioProcessor = AudioProcessor(store: store)
+                _audioProcessor = StateObject(wrappedValue: audioProcessor)
                 
-                // 3) Instantiate Study with that same store
                 _study = StateObject(
-                        wrappedValue: Study(audioProcessor: self.audioProcessor, store: store)
+                        wrappedValue: Study(audioProcessor: audioProcessor, store: store)
                 )
-                
-                // 4) The phoneConnection can remain a plain @State
-                _phoneConnection = State(initialValue: PhoneConnectionManager())
         }
         
         var body: some View {
                 NavigationView {
                         GeometryReader { geo in
                                 VStack(spacing: 0) {
+                                        // ─────────── CONNECTION STATUS ───────────
+                                        ConnectionStatusView(state: connectionState)
+                                                .padding(.horizontal)
+                                                .frame(height: 30)
+                                        
                                         // ─────────── PLOTS ───────────
-                                        // Pass the `study` wrapper in—any visualization that needs audio data
-                                        // comes from `study`, which itself is reading from `parameters`.
                                         StudyView(study: study, store: store)
                                                 .background(Color.black)
                                                 .frame(
@@ -95,8 +87,6 @@ struct ContentView: View {
                                                 .layoutPriority(1)
                                         
                                         // ────────── CONTROLS ─────────
-                                        // The `TuningControlsView` will now read/write directly against
-                                        // our shared `parameters` object.
                                         TuningControlsView(store: store)
                                                 .background(Color(uiColor: .secondarySystemBackground))
                                                 .frame(maxWidth: 640)
@@ -105,6 +95,7 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                         .onAppear {
+                                setupConnection()
                                 startProcessing()
                         }
                         .onDisappear {
@@ -117,19 +108,31 @@ struct ContentView: View {
                 }
         }
         
+        // ─────────── Connection Setup ───────────
+        private func setupConnection() {
+                // Set up callbacks
+                PhoneConnectionManager.shared.onUIStateChanged = { state in
+                        DispatchQueue.main.async {
+                                self.connectionState = state
+                        }
+                }
+                
+                PhoneConnectionManager.shared.onDataReceived = { data in
+                        // Handle any data from watch if needed
+                        print("Received from watch: \(data)")
+                }
+                
+                // Start the connection
+                PhoneConnectionManager.shared.start()
+        }
+        
         // ─────────── Engine Control Helpers ───────────
         private func startProcessing() {
                 audioProcessor.start()
                 study.start()
                 
-                // Example: start sending data to watch every 0.1s
-                phoneConnection.getReady()
-                phoneConnection.startSendFramesLoop(
-                        every: 0.1
-                ) {
-                        // Supply whatever packet you need, e.g.:
-                        // return watchPacket(study.currentValue)
-                }
+                // Start sending data to watch
+                startDataSending()
                 
                 isProcessing = true
         }
@@ -137,7 +140,70 @@ struct ContentView: View {
         private func stopProcessing() {
                 audioProcessor.stop()
                 study.stop()
-                phoneConnection.stopSendFramesLoop()
+                
+                // Stop sending data
+                stopDataSending()
+                
+                // Stop connection
+                PhoneConnectionManager.shared.stop()
+                
                 isProcessing = false
+        }
+        
+        private func startDataSending() {
+                sendTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                        // Only send if we're connected
+                        guard case .connected = self.connectionState else { return }
+                        
+                        // Send current data
+                        let data = [self.study.targetHPSFundamental]
+                        PhoneConnectionManager.shared.sendData(data, guaranteed: false)
+                }
+        }
+        
+        private func stopDataSending() {
+                sendTimer?.invalidate()
+                sendTimer = nil
+        }
+}
+
+// Simple connection status view
+struct ConnectionStatusView: View {
+        let state: PhoneUIState
+        
+        var body: some View {
+                HStack {
+                        Image(systemName: iconName)
+                                .foregroundColor(iconColor)
+                        Text(statusText)
+                                .font(.caption)
+                        Spacer()
+                }
+        }
+        
+        private var iconName: String {
+                switch state {
+                case .connected: return "applewatch.radiowaves.left.and.right"
+                case .searching: return "applewatch.slash"
+                default: return "exclamationmark.triangle"
+                }
+        }
+        
+        private var iconColor: Color {
+                switch state {
+                case .connected: return .green
+                case .searching: return .orange
+                default: return .red
+                }
+        }
+        
+        private var statusText: String {
+                switch state {
+                case .connected: return "Watch Connected"
+                case .searching: return "Searching..."
+                case .watchAppInactive: return "Open Watch App"
+                case .watchNotPaired: return "No Watch Paired"
+                case .error(let msg): return msg
+                }
         }
 }

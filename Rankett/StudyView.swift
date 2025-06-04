@@ -52,8 +52,7 @@ struct StudyView: UIViewRepresentable {
 // 2) StudyGraphView now takes a plain store reference
 //-----------------------------------------
 final class StudyGraphView: UIView {
-        // Instead of: private let config = AnalyzerConfig.default
-        // we hold onto a reference to the shared store:
+
         private let store: TuningParameterStore
         
         // The timer that drives redraws
@@ -86,7 +85,7 @@ final class StudyGraphView: UIView {
         init(store: TuningParameterStore) {
                 self.store = store
                 super.init(frame: .zero)
-                setupTimer()    // Now uses `store.frameInterval` instead of config.rendering.frameInterval
+                setupTimer()
         }
         
         // We deliberately do NOT support init(frame:) or init(coder:) directly,
@@ -107,11 +106,7 @@ final class StudyGraphView: UIView {
         
         // MARK: – Timer Setup
         private func setupTimer() {
-                // Note: store.frameInterval is a computed property on TuningParameterStore:
-                //
-                //     var frameInterval: TimeInterval { 1.0 / renderingTargetFPS }
-                //
-                // so it replaces your old `config.rendering.frameInterval`.
+
                 displayTimer = Timer.scheduledTimer(
                         withTimeInterval: store.frameInterval,
                         repeats: true
@@ -162,7 +157,7 @@ final class StudyGraphView: UIView {
                 dataLock.lock()
                 
                 // Smooth interpolation
-                let alpha = config.rendering.smoothingFactor
+                let alpha = store.animationSmoothingFactor
                 let beta = 1.0 - alpha
                 
                 // Smooth spectrum data

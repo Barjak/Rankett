@@ -7,6 +7,7 @@
 
 import Foundation
 import WatchConnectivity
+import UIKit
 
 // MARK: - State Definitions
 
@@ -15,7 +16,7 @@ enum PhoneAppState {
         case background
         case foreground
 }
-
+        
 enum PhoneWCState {
         case notActivated
         case activating

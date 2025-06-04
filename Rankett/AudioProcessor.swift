@@ -3,7 +3,7 @@ import AVFoundation
 
 // MARK: - Audio Processor
 final class AudioProcessor: ObservableObject {
-        let config: AnalyzerConfig
+        let store: TuningParameterStore
         private let circularBuffer: CircularBuffer
         
         // Audio engine
@@ -16,9 +16,9 @@ final class AudioProcessor: ObservableObject {
         // Published state
         @Published var isRunning = false
         
-        init(config: AnalyzerConfig = .default) {
-                self.config = config
-                self.circularBuffer = CircularBuffer(capacity: config.fft.circularBufferSize)
+        init(store: TuningParameterStore = .default) {
+                self.store = store
+                self.circularBuffer = CircularBuffer(capacity: store.circularBufferSize)
                 configureAudioSession()
         }
         
@@ -54,7 +54,7 @@ final class AudioProcessor: ObservableObject {
                 engine.connect(playerNode, to: engine.mainMixerNode, format: format)
                 
                 // Install tap
-                let tapBufferSize = AVAudioFrameCount(config.fft.hopSize)
+                let tapBufferSize = AVAudioFrameCount(store.hopSize)
                 engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
                         self?.handleAudioBuffer(buffer)
                 }

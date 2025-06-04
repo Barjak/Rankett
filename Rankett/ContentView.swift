@@ -42,7 +42,7 @@ struct SpectrumAnalyzerApp: App {
 struct ContentView: View {
         // ─────────── Shared Tuning Parameters ───────────
         /// This store holds concert pitch, target pitch, end‐correction settings, temperament, etc.
-        @StateObject private var parameters = TuningParameterStore()
+        @StateObject private var store = TuningParameterStore()
         
         // ─────────── Analysis Engine ───────────
         /// AudioProcessor drives `parameters.actualPitch` (and hence `centsError`, `beatFrequency`, etc.)
@@ -61,18 +61,17 @@ struct ContentView: View {
         // we must initialize them all in `init()` before calling any super initializer.
         init() {
                 // 1) Create the single TuningParameterStore
-                let store = TuningParameterStore()
-                _parameters = StateObject(wrappedValue: store)
+                _store = StateObject(wrappedValue: store)
                 
                 // 2) Instantiate AudioProcessor with that same store
                 //    (replace `parameterStore:` with your actual init if needed)
                 _audioProcessor = StateObject(
-                        wrappedValue: AudioProcessor(parameterStore: store)
+                        wrappedValue: AudioProcessor(store: store)
                 )
                 
                 // 3) Instantiate Study with that same store
                 _study = StateObject(
-                        wrappedValue: Study(parameterStore: store)
+                        wrappedValue: Study(audioProcessor: self.audioProcessor, store: store)
                 )
                 
                 // 4) The phoneConnection can remain a plain @State
@@ -86,7 +85,7 @@ struct ContentView: View {
                                         // ─────────── PLOTS ───────────
                                         // Pass the `study` wrapper in—any visualization that needs audio data
                                         // comes from `study`, which itself is reading from `parameters`.
-                                        StudyView(study: study)
+                                        StudyView(study: study, store: store)
                                                 .background(Color.black)
                                                 .frame(
                                                         minHeight: geo.size.height * layout.studyHeightFraction,
@@ -98,7 +97,7 @@ struct ContentView: View {
                                         // ────────── CONTROLS ─────────
                                         // The `TuningControlsView` will now read/write directly against
                                         // our shared `parameters` object.
-                                        TuningControlsView(parameters: parameters)
+                                        TuningControlsView(store: store)
                                                 .background(Color(uiColor: .secondarySystemBackground))
                                                 .frame(maxWidth: 640)
                                                 .padding(.vertical)

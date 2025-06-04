@@ -4,7 +4,7 @@ import SwiftUI
 struct NumericalPitchDisplayRow: View {
         @Binding var leftMode: NumericalDisplayMode
         @Binding var rightMode: NumericalDisplayMode
-        @ObservedObject var parameters: TuningParameterStore
+        @ObservedObject var store: TuningParameterStore
         
         @State private var showingLeftModal = false
         @State private var showingRightModal = false
@@ -54,15 +54,15 @@ struct NumericalPitchDisplayRow: View {
         private func displayValue(for mode: NumericalDisplayMode) -> String {
                 switch mode {
                 case .cents:
-                        return String(format: "%+.1f¢", parameters.centsError)
+                        return String(format: "%+.1f¢", store.centsError)
                 case .beat:
-                        return String(format: "%.2f Hz", parameters.beatFrequency)
+                        return String(format: "%.2f Hz", store.beatFrequency)
                 case .errorHz:
-                        return String(format: "%+.2f Hz", parameters.actualPitch - parameters.targetPitch)
+                        return String(format: "%+.2f Hz", store.actualPitch - store.targetPitch)
                 case .targetHz:
-                        return String(format: "%.2f Hz", parameters.targetPitch)
+                        return String(format: "%.2f Hz", store.targetPitch)
                 case .actualHz:
-                        return String(format: "%.2f Hz", parameters.actualPitch)
+                        return String(format: "%.2f Hz", store.actualPitch)
                 case .theoreticalLength:
                         return "1234 mm" // Placeholder
                 case .lengthCorrectionNaive:

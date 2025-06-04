@@ -3,54 +3,54 @@ import SwiftUI
 
 
 struct TuningControlsView: View {
-        @ObservedObject var parameters: TuningParameterStore
+        @ObservedObject var store: TuningParameterStore
         @State private var showingTemperamentModal = false
         @State private var showingInstrumentModal = false
         @State private var carouselSelection = 0
         
-        init(parameters: TuningParameterStore) {
-                self._parameters = ObservedObject(wrappedValue: parameters)
+        init(store: TuningParameterStore) {
+                self._store = ObservedObject(wrappedValue: store)
         }
         
         var body: some View {
                 VStack(spacing: 12) {
                         // Carousel Pitch Display
-                        CarouselPitchDisplay(centsError: parameters.centsError)
+                        CarouselPitchDisplay(centsError: store.centsError)
                                 .frame(height: 60)
                         
                         // Numerical Pitch Display
                         NumericalPitchDisplayRow(
-                                leftMode: $parameters.leftDisplayMode,
-                                rightMode: $parameters.rightDisplayMode,
-                                parameters: parameters
+                                leftMode: $store.leftDisplayMode,
+                                rightMode: $store.rightDisplayMode,
+                                store: store
                         )
                         .frame(height: 50)
                         
                         // Target pitch controls
                         TargetPitchRow(
-                                targetPitch: $parameters.targetPitch,
-                                incrementSemitones: $parameters.pitchIncrementSemitones
+                                targetPitch: $store.targetPitch,
+                                incrementSemitones: $store.pitchIncrementSemitones
                         )
                         .frame(height: 70) // Slightly taller as specified
                         
                         // Concert pitch controls
-                        ConcertPitchRow(concertPitch: $parameters.concertPitch)
+                        ConcertPitchRow(concertPitch: $store.concertPitch)
                                 .frame(height: 50)
                         
                         // Target overtone controls
-                        TargetOvertoneRow(targetPartial: $parameters.targetPartial)
+                        TargetOvertoneRow(targetPartial: $store.targetPartial)
                                 .frame(height: 50)
                         
                         // Temperament and Instrument buttons
                         HStack(spacing: 12) {
                                 Button(action: { showingTemperamentModal = true }) {
-                                        Label(parameters.temperament.rawValue, systemImage: "music.note.list")
+                                        Label(store.temperament.rawValue, systemImage: "music.note.list")
                                                 .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(TuningButtonStyle())
                                 
                                 Button(action: { showingInstrumentModal = true }) {
-                                        Label(parameters.selectedInstrument.name, systemImage: "pianokeys")
+                                        Label(store.selectedInstrument.name, systemImage: "pianokeys")
                                                 .frame(maxWidth: .infinity)
                                 }
                                 .buttonStyle(TuningButtonStyle())
@@ -60,22 +60,22 @@ struct TuningControlsView: View {
                         // Carousel selector for additional options
                         CarouselSelectorRow(
                                 selection: $carouselSelection,
-                                audibleToneEnabled: $parameters.audibleToneEnabled,
-                                mutationTranspose: $parameters.mutationStopTranspose,
-                                gateTime: $parameters.gateTime
+                                audibleToneEnabled: $store.audibleToneEnabled,
+                                mutationTranspose: $store.mutationStopTranspose,
+                                gateTime: $store.gateTime
                         )
                         .frame(height: 50)
                 }
                 .padding(.horizontal)
                 .sheet(isPresented: $showingTemperamentModal) {
                         TemperamentModal(
-                                temperament: $parameters.temperament,
+                                temperament: $store.temperament,
                                 isPresented: $showingTemperamentModal
                         )
                 }
                 .sheet(isPresented: $showingInstrumentModal) {
                         InstrumentModal(
-                                instrument: $parameters.selectedInstrument,
+                                instrument: $store.selectedInstrument,
                                 isPresented: $showingInstrumentModal
                         )
                 }

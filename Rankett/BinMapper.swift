@@ -2,29 +2,29 @@
 import Foundation
 
 final class BinMapper {
-        private let config: AnalyzerConfig
+        private let store: TuningParameterStore
         private let binCount: Int
         private let halfSize: Int
         
         // Pre-computed mapping for log scale
         private let logBinIndices: [(low: Int, high: Int, fraction: Float)]
         
-        init(config: AnalyzerConfig, halfSize: Int) {
-                self.config = config
+        init(store: TuningParameterStore, halfSize: Int) {
+                self.store = store
                 self.halfSize = halfSize
-                self.binCount = config.fft.outputBinCount
+                self.binCount = store.downscaleBinCount
                 
                 let binCount = self.binCount
                 let halfSize = self.halfSize
-                let useLog   = config.rendering.useLogFrequencyScale
+                let useLog   = store.renderWithLogFrequencyScale
                 
                 // these only depend on locals, never on self
                 let indices: [(low: Int, high: Int, fraction: Float)]
                 if useLog {
-                        let nyquist  = config.audio.nyquistFrequency
-                        let freqRes  = config.fft.frequencyResolution
-                        let logMin   = log10(config.rendering.minFrequency)
-                        let logMax   = log10(min(config.rendering.maxFrequency, nyquist))
+                        let nyquist  = store.nyquistFrequency
+                        let freqRes  = store.frequencyResolution
+                        let logMin   = log10(store.renderMinFrequency)
+                        let logMax   = log10(min(store.renderMaxFrequency, nyquist))
                         
                         indices = (0..<binCount).map { i in
                                 let t       = Float(i) / Float(binCount - 1)
@@ -96,9 +96,9 @@ final class BinMapper {
         
         /// Get frequency for each output bin
         var binFrequencies: [Float] {
-                if config.rendering.useLogFrequencyScale {
-                        let logMin = log10(config.rendering.minFrequency)
-                        let logMax = log10(min(config.rendering.maxFrequency, config.audio.nyquistFrequency))
+                if store.renderWithLogFrequencyScale {
+                        let logMin = log10(store.renderMinFrequency)
+                        let logMax = log10(min(store.renderMaxFrequency, store.nyquistFrequency))
                         
                         return (0..<binCount).map { i in
                                 let t = Float(i) / Float(binCount - 1)
@@ -106,7 +106,7 @@ final class BinMapper {
                                 return Float(pow(10, logFreq))
                         }
                 } else {
-                        let maxFreq = Float(config.audio.nyquistFrequency)
+                        let maxFreq = Float(store.nyquistFrequency)
                         return (0..<binCount).map { i in
                                 Float(i) * maxFreq / Float(binCount - 1)
                         }

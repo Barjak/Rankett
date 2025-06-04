@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUICore
 import Accelerate
 import CoreML
 
@@ -107,7 +108,7 @@ struct Peak {
 // MARK: - Study Analysis Class
 final class Study: ObservableObject {
         private let audioProcessor: AudioProcessor
-        private let config: AnalyzerConfig
+        private let store: TuningParameterStore
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         private var isRunning = false
         private var isFirstRun = true
@@ -151,10 +152,10 @@ final class Study: ObservableObject {
         @Published var targetHPSSpectrum: [Float] = []
         @Published var targetHPSFundamental: Float = 0
         
-        init(audioProcessor: AudioProcessor, config: AnalyzerConfig) {
+        init(audioProcessor: AudioProcessor, store: TuningParameterStore) {
                 self.audioProcessor = audioProcessor
-                self.config = config
-                self.fftSize = config.fft.size
+                self.store = store
+                self.fftSize = parameters.fftSize
                 self.halfSize = fftSize / 2
                 self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [0.1, 0.2, 0.3, 0.35])
 
@@ -374,16 +375,16 @@ final class Study: ObservableObject {
         private func fitNoiseFloor(magnitudesDB: UnsafeMutablePointer<Float>,
                                    frequencies: UnsafeMutablePointer<Float>,
                                    count: Int,
-                                   config: AnalyzerConfig.NoiseFloor) {
+                                   store: TuningParameterStore) {
                 
-                switch config.method {
+                switch store.NoiseFloorMethod {
                 case .quantileRegression:
                         fitNoiseFloorQuantile(
                                 magnitudesDB: magnitudesDB,
                                 output: currentNoiseFloor,
                                 count: count,
-                                quantile: config.quantile,
-                                smoothingSigma: config.smoothingSigma
+                                quantile: store.noiseQuantile,
+                                smoothingSigma: store.noiseSmoothingSigma
                         )
                 }
                 
@@ -548,24 +549,24 @@ final class Study: ObservableObject {
         private func findPeaks(in spectrum: UnsafeMutablePointer<Float>,
                                frequencies: UnsafeMutablePointer<Float>,
                                count: Int,
-                               config: AnalyzerConfig.PeakDetection) -> [Peak] {
+                               store: TuningParameterStore) -> [Peak] {
                 var peaks: [Peak] = []
                 
                 // Find local maxima
                 for i in 1..<(count - 1) {
                         if spectrum[i] > spectrum[i-1] &&
                                 spectrum[i] > spectrum[i+1] &&
-                                spectrum[i] > config.minHeight {
+                                spectrum[i] > store.peakMinHeight {
                                 
                                 // Calculate prominence
                                 let (prominence, leftBase, rightBase) = calculateProminence(
                                         at: i,
                                         in: spectrum,
                                         count: count,
-                                        window: config.prominenceWindow
+                                        window: store.peakProminenceWindow
                                 )
                                 
-                                if prominence >= config.minProminence {
+                                if prominence >= store.peakMinProminence {
                                         peaks.append(Peak(
                                                 index: i,
                                                 frequency: frequencies[i],
@@ -579,7 +580,7 @@ final class Study: ObservableObject {
                 }
                 
                 // Filter by minimum distance
-                peaks = filterByDistance(peaks, minDistance: config.minDistance)
+                peaks = filterByDistance(peaks, minDistance: store.peakMinDistance)
                 
                 return peaks
         }

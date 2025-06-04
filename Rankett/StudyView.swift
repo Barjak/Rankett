@@ -1,11 +1,16 @@
 import SwiftUI
 import UIKit
 
+//-----------------------------------------
+// 1) StudyView now takes both a Study and the shared TuningParameterStore
+//-----------------------------------------
 struct StudyView: UIViewRepresentable {
         @ObservedObject var study: Study
+        @ObservedObject var store: TuningParameterStore
         
         func makeUIView(context: Context) -> StudyGraphView {
-                let view = StudyGraphView()
+                // Pass the store into the view’s initializer:
+                let view = StudyGraphView(store: store)
                 view.backgroundColor = .black
                 view.isOpaque = true
                 view.contentMode = .redraw
@@ -13,67 +18,104 @@ struct StudyView: UIViewRepresentable {
         }
         
         func updateUIView(_ uiView: StudyGraphView, context: Context) {
+                // 1) First, refresh the view’s “data” from `study` (exactly as before)
                 uiView.updateTargets(
                         originalSpectrum: study.targetOriginalSpectrum,
-                        noiseFloor: study.targetNoiseFloor,
-                        denoisedSpectrum: study.targetDenoisedSpectrum,
-                        frequencies: study.targetFrequencies,
-                        hpsSpectrum: study.targetHPSSpectrum,
-                        hpsFundamental: study.targetHPSFundamental
+                        noiseFloor:        study.targetNoiseFloor,
+                        denoisedSpectrum:  study.targetDenoisedSpectrum,
+                        frequencies:       study.targetFrequencies,
+                        hpsSpectrum:       study.targetHPSSpectrum,
+                        hpsFundamental:    study.targetHPSFundamental
                 )
+                
+                // 2) Then, if anything in `store` changed that affects drawing––for example,
+                //    if you want to react to a new frameInterval or any other tuning parameter––
+                //    you can force a redraw. In most cases, you only need to do this if
+                //    the store holds something that changes the way you paint.
+                //
+                //    If you rely solely on the timer already running inside StudyGraphView
+                //    (see below) to drive redrawing, you might not have to call setNeedsDisplay()
+                //    here. But if you add new “properties” in your store that should trigger
+                //    an immediate UI change (e.g. a color‐scheme toggle, or a toggle of a threshold),
+                //    you can call:
+                //
+                //    uiView.setNeedsDisplay()
+                //
+                //    That way, StudyGraphView.draw(_:) will run with the latest `store` values.
+                
+                uiView.setNeedsDisplay()
         }
 }
 
-// StudyGraphView remains the same
 
+//-----------------------------------------
+// 2) StudyGraphView now takes a plain store reference
+//-----------------------------------------
 final class StudyGraphView: UIView {
-        private let config = AnalyzerConfig.default
+        // Instead of: private let config = AnalyzerConfig.default
+        // we hold onto a reference to the shared store:
+        private let store: TuningParameterStore
+        
+        // The timer that drives redraws
         private var displayTimer: Timer?
         
-        // Current (smoothed) display data
+        // (All your “current” / “target” data buffers, locks, etc. remain exactly the same)
         private var currentOriginal: [Float] = []
         private var currentNoiseFloor: [Float] = []
         private var currentDenoised: [Float] = []
         private var currentFrequencies: [Float] = []
         private var currentPeaks: [Peak] = []
-        private var smoothedPeakPositions: [Float: CGPoint] = [:] // Track by frequency
-
+        private var smoothedPeakPositions: [Float: CGPoint] = [:]
         
-        // Target data (from Study)
         private var targetOriginal: [Float] = []
         private var targetNoiseFloor: [Float] = []
         private var targetDenoised: [Float] = []
         private var targetFrequencies: [Float] = []
         private var targetPeaks: [Peak] = []
         
-        
         private var currentHPSSpectrum: [Float] = []
         private var targetHPSSpectrum: [Float] = []
         private var currentHPSFundamental: Float = 0
         private var targetHPSFundamental: Float = 0
         
-        // Bin mapper
         private var binMapper: BinMapper?
-        
-        // Thread safety
         private let dataLock = NSLock()
         
-        override init(frame: CGRect) {
-                super.init(frame: frame)
-                setupTimer()
+        // MARK: – Init
+        /// We force callers to use `init(store:)` so that `store` is set before setupTimer() runs.
+        init(store: TuningParameterStore) {
+                self.store = store
+                super.init(frame: .zero)
+                setupTimer()    // Now uses `store.frameInterval` instead of config.rendering.frameInterval
         }
         
+        // We deliberately do NOT support init(frame:) or init(coder:) directly,
+        // because we want to guarantee `store` is always provided.
+        @available(*, unavailable)
+        override init(frame: CGRect) {
+                fatalError("Use init(store:) instead")
+        }
+        
+        @available(*, unavailable)
         required init?(coder: NSCoder) {
-                super.init(coder: coder)
-                setupTimer()
+                fatalError("Use init(store:) instead")
         }
         
         deinit {
                 displayTimer?.invalidate()
         }
         
+        // MARK: – Timer Setup
         private func setupTimer() {
-                displayTimer = Timer.scheduledTimer(withTimeInterval: config.rendering.frameInterval, repeats: true) { [weak self] _ in
+                // Note: store.frameInterval is a computed property on TuningParameterStore:
+                //
+                //     var frameInterval: TimeInterval { 1.0 / renderingTargetFPS }
+                //
+                // so it replaces your old `config.rendering.frameInterval`.
+                displayTimer = Timer.scheduledTimer(
+                        withTimeInterval: store.frameInterval,
+                        repeats: true
+                ) { [weak self] _ in
                         self?.updateDisplay()
                 }
         }
@@ -87,8 +129,8 @@ final class StudyGraphView: UIView {
                 guard !originalSpectrum.isEmpty else { return }
                 
                 // Create bin mapper if needed
-                if binMapper == nil || binMapper?.binFrequencies.count != config.fft.outputBinCount {
-                        binMapper = BinMapper(config: config, halfSize: originalSpectrum.count)
+                if binMapper == nil || binMapper?.binFrequencies.count != store.downscaleBinCount {
+                        binMapper = BinMapper(store: store, halfSize: originalSpectrum.count)
                 }
                 
                 // Map full resolution data to display bins

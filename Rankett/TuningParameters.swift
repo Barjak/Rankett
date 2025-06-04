@@ -109,9 +109,11 @@ class TuningParameterStore: ObservableObject {
         
         // fftSize is a constant 8192 (immutable)
         let fftSize: Int = 8192
+        let hopSize: Int = 5121
+
         
         // outputBinCount was 512 (we keep it @Published so it’s adjustable if you want):
-        @Published var fftOutputBinCount: Int = 512
+        @Published var downscaleBinCount: Int = 512
         
         // Derived values:
         var frequencyResolution: Double {
@@ -133,9 +135,9 @@ class TuningParameterStore: ObservableObject {
         
         // Animation smoothing, log‐scale flag, min/max frequency are constants
         let animationSmoothingFactor: Float = 0.7
-        let useLogFrequencyScale: Bool = true
-        let minFrequency: Double = 20
-        let maxFrequency: Double = 20_000
+        let renderWithLogFrequencyScale: Bool = true
+        let renderMinFrequency: Double = 20
+        let renderMaxFrequency: Double = 20_000
         
         //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
         // 5) “PeakDetection” settings (formerly AnalyzerConfig.PeakDetection)

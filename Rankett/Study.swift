@@ -157,7 +157,7 @@ final class Study: ObservableObject {
                 self.store = store
                 self.fftSize = store.fftSize
                 self.halfSize = fftSize / 2
-                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [0.1, 0.2, 0.3, 0.35])
+                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [1.0])
 
                 // Create FFT setup
                 let log2n = vDSP_Length(log2(Float(fftSize)))

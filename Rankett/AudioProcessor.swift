@@ -8,7 +8,7 @@ final class AudioProcessor: ObservableObject {
         
         // Audio engine
         private let engine = AVAudioEngine()
-        private let playerNode = AVAudioPlayerNode()
+        // private let playerNode = AVAudioPlayerNode() // Commented out - not needed for microphone input
         
         // Thread safety
         private let bufferLock = NSLock()
@@ -24,7 +24,8 @@ final class AudioProcessor: ObservableObject {
         
         private func configureAudioSession() {
                 do {
-                        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                        // Changed to .record for microphone input
+                        try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement)
                         try AVAudioSession.sharedInstance().setActive(true)
                 } catch {
                         print("Audio session error: \(error)")
@@ -32,44 +33,54 @@ final class AudioProcessor: ObservableObject {
         }
         
         func start() {
-                guard let url = Bundle.main.url(forResource: "Test1", withExtension: "mp3"),
-                      let audioFile = try? AVAudioFile(forReading: url) else {
-                        print("Failed to load Test.mp3")
-                        return
-                }
+                /* Commented out MP3 loading
+                 guard let url = Bundle.main.url(forResource: "Test1", withExtension: "mp3"),
+                 let audioFile = try? AVAudioFile(forReading: url) else {
+                 print("Failed to load Test.mp3")
+                 return
+                 }
+                 */
                 
-                engine.mainMixerNode.removeTap(onBus: 0)
+                // Remove any existing tap
+                engine.inputNode.removeTap(onBus: 0)
                 
                 // Stop engine if it's running
                 if engine.isRunning {
                         engine.stop()
                 }
                 
-                // Detach and reattach player node to ensure clean state
-                if engine.attachedNodes.contains(playerNode) {
-                        engine.detach(playerNode)
-                }
-                engine.attach(playerNode)
-                let format = audioFile.processingFormat
-                engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+                /* Commented out player node setup
+                 // Detach and reattach player node to ensure clean state
+                 if engine.attachedNodes.contains(playerNode) {
+                 engine.detach(playerNode)
+                 }
+                 engine.attach(playerNode)
+                 let format = audioFile.processingFormat
+                 engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+                 */
                 
-                // Install tap
+                // Get the input format from microphone
+                let format = engine.inputNode.outputFormat(forBus: 0)
+                
+                // Install tap - using the same buffer size and handling
                 let tapBufferSize = AVAudioFrameCount(store.hopSize)
-                engine.mainMixerNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
+                engine.inputNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: format) { [weak self] buffer, _ in
                         self?.handleAudioBuffer(buffer)
                 }
                 
-                // Start engine and playback
+                // Start engine
                 do {
                         try engine.start()
-                        playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
-                                // Loop playback
-                                DispatchQueue.main.async {
-                                        self?.playerNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
-                                        self?.playerNode.play()
-                                }
-                        }
-                        playerNode.play()
+                        /* Commented out file playback
+                         playerNode.scheduleFile(audioFile, at: nil) { [weak self] in
+                         // Loop playback
+                         DispatchQueue.main.async {
+                         self?.playerNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
+                         self?.playerNode.play()
+                         }
+                         }
+                         playerNode.play()
+                         */
                         isRunning = true
                 } catch {
                         print("Engine start error: \(error)")
@@ -77,8 +88,8 @@ final class AudioProcessor: ObservableObject {
         }
         
         func stop() {
-                playerNode.stop()
-                engine.mainMixerNode.removeTap(onBus: 0)
+                // playerNode.stop() // Commented out
+                engine.inputNode.removeTap(onBus: 0) // Changed from mainMixerNode to inputNode
                 engine.stop()
                 isRunning = false
         }

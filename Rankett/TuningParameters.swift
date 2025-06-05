@@ -132,6 +132,16 @@ class TuningParameterStore: ObservableObject {
         @Published var noiseFloorLambda: Float = 0.7
         
 
+        func targetFrequency() -> Float {
+                return Float(targetNote.frequency(concertA: concertPitch))
+        }
+        
+        func zoomCenterFrequencies(totalWindowCents: Float = 100.0) -> (lower: Double, upper: Double) {
+                let center = targetNote.frequency(concertA: concertPitch)
+                let (lowerF, upperF) = Note.calculateZoomCenterFrequency(centerFreq: center,
+                                                                         totalWindowCents: totalWindowCents)
+                return (Double(lowerF), Double(upperF))
+        }
         
         static let `default` = TuningParameterStore()
 }

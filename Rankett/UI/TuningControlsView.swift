@@ -4,18 +4,21 @@ import SwiftUI
 
 struct TuningControlsView: View {
         @ObservedObject var store: TuningParameterStore
+        @ObservedObject var study: Study
         @State private var showingTemperamentModal = false
         @State private var showingInstrumentModal = false
         @State private var carouselSelection = 0
         
-        init(store: TuningParameterStore) {
+        init(study: Study, store: TuningParameterStore) {
                 self._store = ObservedObject(wrappedValue: store)
+                self._study = ObservedObject(wrappedValue: study)
+
         }
         
         var body: some View {
                 VStack(spacing: 12) {
                         // Carousel Pitch Display
-                        CarouselPitchDisplay(centsError: Double(store.centsError))
+                        CarouselPitchDisplay(centsError: Double(self.study.targetHPSFundamental - self.store.targetFrequency()))
                                 .frame(height: 60)
                         
                         // Numerical Pitch Display
@@ -29,7 +32,8 @@ struct TuningControlsView: View {
                         // Target pitch controls
                         TargetNoteRow(
                                 targetNote: $store.targetNote,
-                                incrementSemitones: $store.pitchIncrementSemitones
+                                incrementSemitones: $store.pitchIncrementSemitones,
+                                store: store
                         )
                         .frame(height: 70) // Slightly taller as specified
                         

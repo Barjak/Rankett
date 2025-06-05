@@ -77,6 +77,7 @@ struct NumericalPitchDisplayRow: View {
 struct TargetNoteRow: View {
         @Binding var targetNote: Note
         @Binding var incrementSemitones: Int
+        @ObservedObject var store: TuningParameterStore
         @State private var showingIncrementModal = false
         @State private var showingAutoTuneModal = false
         
@@ -104,10 +105,12 @@ struct TargetNoteRow: View {
                                 showingIncrementModal = true
                         }
                         
-                        // Target display
+                        // TODO: MAKE THIS DISPLA
                         Button(action: {}) {
                                 VStack {
                                         Text("\(targetNote.displayName)\(targetNote.octave)")
+                                                .font(.system(.title2, design: .monospaced))
+                                        Text(String(format: "%.2f Hz", store.targetFrequency()))
                                                 .font(.caption)
                                                 .opacity(0.7)
                                 }

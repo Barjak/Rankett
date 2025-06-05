@@ -87,7 +87,7 @@ struct ContentView: View {
                                                 .layoutPriority(1)
                                         
                                         // ────────── CONTROLS ─────────
-                                        TuningControlsView(store: store)
+                                        TuningControlsView(study: study, store: store)
                                                 .background(Color(uiColor: .secondarySystemBackground))
                                                 .frame(maxWidth: 640)
                                                 .padding(.vertical)

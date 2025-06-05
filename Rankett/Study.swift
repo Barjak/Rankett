@@ -589,8 +589,8 @@ struct StudyResult {
         let hpsFundamental: Float
         let timestamp: Date
         let processingTime: TimeInterval
-        let zoomSpectrum: [Float]? = nil
-        let zoomFreqeuncies: [Float]? = nil
+//        let zoomSpectrum: [Float]
+//        let zoomFreqeuncies: [Float]
 }
 
 // MARK: - Simplified Study Class
@@ -602,7 +602,7 @@ final class Study: ObservableObject {
         
         // FFT processors
         private let mainFFT: FFTProcessor
-        private let zoomFFT: ZoomFFTProcessor
+//        private let zoomFFT: ZoomFFTProcessor?
         private let hpsProcessor: HPSProcessor
         private let noiseFloorEstimator: NoiseFloorEstimator
         
@@ -623,8 +623,6 @@ final class Study: ObservableObject {
         @Published var targetHPSFundamental: Float = 0
         @Published var zoomSpectrum: [Float] = []
         @Published var zoomFrequencies: [Float] = []
-        @Published var zoomCenterFrequency: Float = 440.0
-        @Published var zoomRangeInCents: Float = 100.0
         
         init(audioProcessor: AudioProcessor, store: TuningParameterStore) {
                 self.audioProcessor = audioProcessor
@@ -635,14 +633,14 @@ final class Study: ObservableObject {
                 
                 // Initialize FFT processors
                 self.mainFFT = FFTProcessor(fftSize: fftSize)
-                self.zoomFFT = ZoomFFTProcessor(
-                        zoomFFTSize: 2048,
-                        decimationFactor: 16,
-                        originalFFTSize: fftSize
-                )
+//                self.zoomFFT = ZoomFFTProcessor(
+//                        zoomFFTSize: 2048,
+//                        decimationFactor: 16,
+//                        originalFFTSize: fftSize
+//                )
                 self.hpsProcessor = HPSProcessor(
                         spectrumSize: halfSize,
-                        harmonicProfile: [1.0]
+                        harmonicProfile: [0.3, 0.3, 0.3]
                 )
                 self.noiseFloorEstimator = NoiseFloorEstimator(store: self.store)
                 
@@ -701,6 +699,7 @@ final class Study: ObservableObject {
                                         self?.targetHPSFundamental   = result.hpsFundamental
 //                                        self?.zoomSpectrum           = result.zoomSpectrum
 //                                        self?.zoomFrequencies        = result.zoomFreqeuncies
+
                                 }
                         }
                         Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update
@@ -751,7 +750,6 @@ final class Study: ObservableObject {
 //                        )
 //                }
                 
-                store.centsError = hpsFundamental - store.targetNote.frequency(concertA: store.concertPitch)
                 // Package and return results
                 return StudyResult(
                         originalSpectrum: Array(UnsafeBufferPointer(start: mainFFT.magnitudeBuffer, count: mainFFT.halfSize)),

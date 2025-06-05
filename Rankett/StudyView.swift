@@ -193,7 +193,7 @@ final class StudyGraphView: UIView {
         private var plots: [Plot] = [
                 Plot(color: .systemBlue.withAlphaComponent(0.5), name: "Original", lineWidth: 0.8),
                 Plot(color: .systemRed, name: "Noise Floor", lineWidth: 0.8),
-//                Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
+                Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
                 Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
         ]
         

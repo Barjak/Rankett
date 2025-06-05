@@ -56,7 +56,7 @@ struct Instrument: Identifiable, Equatable {
 
 class TuningParameterStore: ObservableObject {
         @Published var concertPitch: Double = 440.0
-        @Published var targetPitch: Double = 440.0
+        @Published var targetNote: Note = Note(name: "a1")
         @Published var targetPartial: Int = 1
         
         @Published var overtoneProfile: [Double] =
@@ -82,16 +82,7 @@ class TuningParameterStore: ObservableObject {
                 wallThickness: 0.0
         )
         
-        // Calculated (read‐only) properties for the tuner:
-        var actualPitch: Double = 440.0 // (would come from your audio processor)
-        var centsError: Double {
-                1200 * log2(actualPitch / targetPitch)
-        }
-        var beatFrequency: Double {
-                abs(actualPitch - targetPitch)
-        }
-
-        
+        @Published var centsError: Float = 0.0
         // sampleRate is fixed at 44 100 Hz (immutable)
         let audioSampleRate: Double = 44_100
         // Nyquist is derived automatically
@@ -132,12 +123,13 @@ class TuningParameterStore: ObservableObject {
         let noiseFloorMaxIterations = 10
         let noiseFloorConvergenceThreshold: Float = 1e-4
         @Published var noiseFloorBandwidthSemitones: Float = 5.0
-        
+        @Published var noiseFloorAlpha: Float = 1.0 // Smooth between frames
 
         
         @Published var noiseMethod: NoiseFloorMethod = .quantileRegression
         @Published var noiseThresholdOffset: Float = 10.0
         @Published var noiseQuantile: Float = 0.02
+        @Published var noiseFloorLambda: Float = 0.7
         
 
         

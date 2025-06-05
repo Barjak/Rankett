@@ -56,13 +56,13 @@ struct NumericalPitchDisplayRow: View {
                 case .cents:
                         return String(format: "%+.1f¢", store.centsError)
                 case .beat:
-                        return String(format: "%.2f Hz", store.beatFrequency)
+                        return String("Not Implemented")//String(format: "%.2f Hz", store.beatFrequency)
                 case .errorHz:
-                        return String(format: "%+.2f Hz", store.actualPitch - store.targetPitch)
+                        return String(format: "%+.2f Hz", store.centsError)
                 case .targetHz:
-                        return String(format: "%.2f Hz", store.targetPitch)
+                        return String(format: "%.2f Hz", store.targetNote.frequency(concertA: store.concertPitch))
                 case .actualHz:
-                        return String(format: "%.2f Hz", store.actualPitch)
+                        return String(format: "%.2f Hz", store.targetNote.frequency(concertA: store.concertPitch) + store.centsError)
                 case .theoreticalLength:
                         return "1234 mm" // Placeholder
                 case .lengthCorrectionNaive:
@@ -74,28 +74,28 @@ struct NumericalPitchDisplayRow: View {
 }
 
 // MARK: - Target Pitch Row
-
-struct TargetPitchRow: View {
-        @Binding var targetPitch: Double
+struct TargetNoteRow: View {
+        @Binding var targetNote: Note
         @Binding var incrementSemitones: Int
         @State private var showingIncrementModal = false
         @State private var showingAutoTuneModal = false
         
-        private func incrementPitch(by semitones: Int) {
-                targetPitch *= pow(2.0, Double(semitones) / 12.0)
+        private func incrementNote(by semitones: Int) {
+                targetNote = targetNote.transposed(by: semitones)
         }
+        
         
         var body: some View {
                 HStack(spacing: 12) {
                         // Octave down
-                        Button(action: { incrementPitch(by: -12) }) {
+                        Button(action: { incrementNote(by: -12) }) {
                                 Image(systemName: "chevron.left.2")
                                         .font(.title3)
                         }
                         .buttonStyle(TuningButtonStyle())
                         
                         // Fine down
-                        Button(action: { incrementPitch(by: -incrementSemitones) }) {
+                        Button(action: { incrementNote(by: -incrementSemitones) }) {
                                 Image(systemName: "chevron.left")
                                         .font(.title3)
                         }
@@ -107,9 +107,7 @@ struct TargetPitchRow: View {
                         // Target display
                         Button(action: {}) {
                                 VStack {
-                                        Text(String(format: "%.2f Hz", targetPitch))
-                                                .font(.system(.title, design: .monospaced))
-                                        Text(noteNameFromFrequency(targetPitch))
+                                        Text("\(targetNote.displayName)\(targetNote.octave)")
                                                 .font(.caption)
                                                 .opacity(0.7)
                                 }
@@ -121,7 +119,7 @@ struct TargetPitchRow: View {
                         }
                         
                         // Fine up
-                        Button(action: { incrementPitch(by: incrementSemitones) }) {
+                        Button(action: { incrementNote(by: incrementSemitones) }) {
                                 Image(systemName: "chevron.right")
                                         .font(.title3)
                         }
@@ -131,7 +129,7 @@ struct TargetPitchRow: View {
                         }
                         
                         // Octave up
-                        Button(action: { incrementPitch(by: 12) }) {
+                        Button(action: { incrementNote(by: 12) }) {
                                 Image(systemName: "chevron.right.2")
                                         .font(.title3)
                         }
@@ -143,16 +141,14 @@ struct TargetPitchRow: View {
                                 isPresented: $showingIncrementModal
                         )
                 }
-        }
-        
-        private func noteNameFromFrequency(_ frequency: Double) -> String {
-                // Simplified note name calculation
-                let noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-                let a4 = 440.0
-                let semitones = round(12.0 * log2(frequency / a4))
-                let noteIndex = (Int(semitones) + 9 + 1200) % 12
-                let octave = Int((semitones + 9) / 12) + 4
-                return "\(noteNames[noteIndex])\(octave)"
+                .sheet(isPresented: $showingAutoTuneModal) {
+                        // Add your AutoTuneModal here if needed
+//                        AutoTuneModal(
+//                                targetNote: $targetNote,
+//                                concertA: concertA,
+//                                isPresented: $showingAutoTuneModal
+//                        )
+                }
         }
 }
 

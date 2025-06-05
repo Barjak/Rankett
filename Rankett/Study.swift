@@ -73,6 +73,511 @@ final class HPSProcessor {
         }
 }
 
+final class FFTProcessor {
+        let fftSize: Int
+        let halfSize: Int
+        private let log2n: vDSP_Length
+        
+        // FFT setup
+        private let fftSetup: FFTSetup
+        
+        // Split complex buffers
+        private let splitReal: UnsafeMutablePointer<Float>
+        private let splitImag: UnsafeMutablePointer<Float>
+        private var splitComplex: DSPSplitComplex
+        
+        // Temp workspace
+        private let tempReal: UnsafeMutablePointer<Float>
+        private let tempImag: UnsafeMutablePointer<Float>
+        private var tempSplit: DSPSplitComplex
+        
+        // Processing buffers
+        let windowBuffer: UnsafeMutablePointer<Float>
+        let windowedBuffer: UnsafeMutablePointer<Float>
+        let magnitudeBuffer: UnsafeMutablePointer<Float>
+        let frequencyBuffer: UnsafeMutablePointer<Float>
+        
+        init(fftSize: Int) {
+                self.fftSize = fftSize
+                self.halfSize = fftSize / 2
+                self.log2n = vDSP_Length(log2(Float(fftSize)))
+                
+                // Create FFT setup
+                guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+                        fatalError("Failed to create FFT setup")
+                }
+                self.fftSetup = setup
+                
+                // Allocate split complex
+                self.splitReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.splitImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.splitReal.initialize(repeating: 0, count: halfSize)
+                self.splitImag.initialize(repeating: 0, count: halfSize)
+                self.splitComplex = DSPSplitComplex(realp: splitReal, imagp: splitImag)
+                
+                // Allocate temp workspace
+                self.tempReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.tempImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.tempReal.initialize(repeating: 0, count: halfSize)
+                self.tempImag.initialize(repeating: 0, count: halfSize)
+                self.tempSplit = DSPSplitComplex(realp: tempReal, imagp: tempImag)
+                
+                // Allocate processing buffers
+                self.windowBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
+                self.windowedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
+                self.magnitudeBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.frequencyBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                
+                self.magnitudeBuffer.initialize(repeating: 0, count: halfSize)
+                self.frequencyBuffer.initialize(repeating: 0, count: halfSize)
+        }
+        
+        deinit {
+                vDSP_destroy_fftsetup(fftSetup)
+                splitReal.deallocate()
+                splitImag.deallocate()
+                tempReal.deallocate()
+                tempImag.deallocate()
+                windowBuffer.deallocate()
+                windowedBuffer.deallocate()
+                magnitudeBuffer.deallocate()
+                frequencyBuffer.deallocate()
+        }
+        
+        func initializeBlackmanHarrisWindow() {
+                let a0: Float = 0.35875
+                let a1: Float = 0.48829
+                let a2: Float = 0.14128
+                let a3: Float = 0.01168
+                
+                for i in 0..<fftSize {
+                        let n = Float(i)
+                        let N = Float(fftSize - 1)
+                        let term1 = a1 * cos(2.0 * .pi * n / N)
+                        let term2 = a2 * cos(4.0 * .pi * n / N)
+                        let term3 = a3 * cos(6.0 * .pi * n / N)
+                        windowBuffer[i] = a0 - term1 + term2 - term3
+                }
+        }
+        
+        func initializeFrequencies(sampleRate: Float) {
+                let binWidth = sampleRate / Float(fftSize)
+                for i in 0..<halfSize {
+                        frequencyBuffer[i] = Float(i) * binWidth
+                }
+        }
+        
+        func performFFT(input: UnsafePointer<Float>, applyWindow: Bool = true) {
+                // Apply window if requested
+                if applyWindow {
+                        vDSP_vmul(input, 1, windowBuffer, 1, windowedBuffer, 1, vDSP_Length(fftSize))
+                } else {
+                        memcpy(windowedBuffer, input, fftSize * MemoryLayout<Float>.size)
+                }
+                
+                // Pack real data into split complex
+                windowedBuffer.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
+                        vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(halfSize))
+                }
+                
+                // Forward FFT
+                vDSP_fft_zript(
+                        fftSetup,
+                        &splitComplex,
+                        1,
+                        &tempSplit,
+                        log2n,
+                        FFTDirection(FFT_FORWARD)
+                )
+                
+                // Compute magnitudes
+                vDSP_zvmags(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(halfSize))
+                
+                // Scale by 2/N
+                var scaleFactor: Float = 2.0 / Float(fftSize)
+                vDSP_vsmul(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(halfSize))
+        }
+        
+        func convertMagnitudesToDB() {
+                var floorDB: Float = 1e-10
+                var ceilingDB: Float = .greatestFiniteMagnitude
+                vDSP_vclip(magnitudeBuffer, 1, &floorDB, &ceilingDB, magnitudeBuffer, 1, vDSP_Length(halfSize))
+                
+                var reference: Float = 1.0
+                vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
+        }
+}
+
+// MARK: - Zoom FFT Processor
+final class ZoomFFTProcessor {
+        private let fftProcessor: FFTProcessor
+        private let decimationFactor: Int
+        
+        // Additional buffers for zoom processing
+        private let modulatedBuffer: UnsafeMutablePointer<Float>
+        private let decimatedBuffer: UnsafeMutablePointer<Float>
+        private let originalFFTSize: Int
+        
+        init(zoomFFTSize: Int, decimationFactor: Int, originalFFTSize: Int) {
+                self.fftProcessor = FFTProcessor(fftSize: zoomFFTSize)
+                self.decimationFactor = decimationFactor
+                self.originalFFTSize = originalFFTSize
+                
+                self.modulatedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: originalFFTSize)
+                self.decimatedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: zoomFFTSize)
+                
+                // Initialize window
+                fftProcessor.initializeBlackmanHarrisWindow()
+        }
+        
+        deinit {
+                modulatedBuffer.deallocate()
+                decimatedBuffer.deallocate()
+        }
+        
+        func performZoomFFT(audioWindow: UnsafePointer<Float>,
+                            lowerHz: Float,
+                            centerHz: Float,
+                            upperHz: Float,
+                            sampleRate: Float) -> (spectrum: [Float], frequencies: [Float]) {
+                
+                // Step 1: Modulate signal
+                for i in 0..<originalFFTSize {
+                        let t = Float(i) / sampleRate
+                        let modulation = cos(2.0 * .pi * centerHz * t)
+                        modulatedBuffer[i] = audioWindow[i] * modulation
+                }
+                
+                // Step 2: Decimate with simple averaging
+                let filterLength = decimationFactor
+                for i in 0..<(originalFFTSize / decimationFactor) {
+                        var sum: Float = 0
+                        for j in 0..<filterLength {
+                                let idx = i * decimationFactor + j
+                                if idx < originalFFTSize {
+                                        sum += modulatedBuffer[idx]
+                                }
+                        }
+                        if i < fftProcessor.fftSize {
+                                decimatedBuffer[i] = sum / Float(filterLength)
+                        }
+                }
+                
+                // Step 3: Perform FFT on decimated signal
+                fftProcessor.performFFT(input: decimatedBuffer)
+                fftProcessor.convertMagnitudesToDB()
+                
+                // Step 4: Generate frequency array
+                let decimatedSampleRate = sampleRate / Float(decimationFactor)
+                fftProcessor.initializeFrequencies(sampleRate: decimatedSampleRate)
+                
+                // Adjust frequencies to account for modulation
+                for i in 0..<fftProcessor.halfSize {
+                        fftProcessor.frequencyBuffer[i] = centerHz - decimatedSampleRate/2 + fftProcessor.frequencyBuffer[i]
+                }
+                
+                
+                var startIdx = 0
+                var endIdx = fftProcessor.halfSize
+                
+                for i in 0..<fftProcessor.halfSize {
+                        if fftProcessor.frequencyBuffer[i] >= lowerHz && startIdx == 0 {
+                                startIdx = i
+                        }
+                        if fftProcessor.frequencyBuffer[i] > upperHz {
+                                endIdx = i
+                                break
+                        }
+                }
+                
+                let relevantCount = endIdx - startIdx
+                let spectrum = Array(UnsafeBufferPointer(start: fftProcessor.magnitudeBuffer + startIdx, count: relevantCount))
+                let frequencies = Array(UnsafeBufferPointer(start: fftProcessor.frequencyBuffer + startIdx, count: relevantCount))
+                
+                return (spectrum, frequencies)
+        }
+}
+
+final class NoiseFloorEstimator {
+        private let store: TuningParameterStore
+        private let halfSize: Int
+        private let fftSize: Int
+        private let currentNoiseFloor: UnsafeMutablePointer<Float>
+        private let previousNoiseFloor: UnsafeMutablePointer<Float>
+        private let tempNoiseFloor: UnsafeMutablePointer<Float>
+        private let qrResultBuffer: UnsafeMutablePointer<Float>
+        private let qrTvBuffer: UnsafeMutablePointer<Float>
+        
+        private var isFirstRun = true
+        
+        init(store: TuningParameterStore) {
+                self.store = store
+                self.fftSize = store.fftSize
+                self.halfSize = fftSize / 2
+                
+                // Allocate buffers
+                self.currentNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.previousNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.tempNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.qrResultBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.qrTvBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                
+                // Initialize to -60 dB
+                currentNoiseFloor.initialize(repeating: -60, count: halfSize)
+                previousNoiseFloor.initialize(repeating: -60, count: halfSize)
+                tempNoiseFloor.initialize(repeating: -60, count: halfSize)
+                qrResultBuffer.initialize(repeating: 0, count: halfSize)
+                qrTvBuffer.initialize(repeating: 0, count: halfSize)
+        }
+        
+        deinit {
+                currentNoiseFloor.deallocate()
+                previousNoiseFloor.deallocate()
+                tempNoiseFloor.deallocate()
+                qrResultBuffer.deallocate()
+                qrTvBuffer.deallocate()
+        }
+        
+        func estimateNoiseFloor(magnitudesDB: UnsafePointer<Float>,
+                                frequencies: UnsafePointer<Float>) -> UnsafePointer<Float> {
+                if isFirstRun {
+                        initializeNoiseFloor(firstMagnitudeSpectrum: magnitudesDB, count: halfSize)
+                        isFirstRun = false
+                }
+                
+                fitNoiseFloor(
+                        magnitudesDB: magnitudesDB,
+                        frequencies: frequencies,
+                        count: halfSize
+                )
+                
+                // Apply temporal smoothing using alpha from store
+                let alpha = store.noiseFloorAlpha
+                var alphaVar = alpha
+                var oneMinusAlpha: Float = 1 - alpha
+                vDSP_vsmul(currentNoiseFloor, 1, &alphaVar, tempNoiseFloor, 1, vDSP_Length(halfSize))
+                vDSP_vsmul(previousNoiseFloor, 1, &oneMinusAlpha, previousNoiseFloor, 1, vDSP_Length(halfSize))
+                vDSP_vadd(tempNoiseFloor, 1, previousNoiseFloor, 1, currentNoiseFloor, 1, vDSP_Length(halfSize))
+                memcpy(previousNoiseFloor, currentNoiseFloor, halfSize * MemoryLayout<Float>.size)
+                
+                return UnsafePointer(currentNoiseFloor)
+        }
+        
+        // MARK: - Fit Noise Floor
+        private func fitNoiseFloor(magnitudesDB: UnsafePointer<Float>,
+                                   frequencies: UnsafePointer<Float>,
+                                   count: Int) {
+                
+                switch store.noiseMethod {
+                case .quantileRegression:
+                        fitNoiseFloorQuantile(
+                                magnitudesDB: magnitudesDB,
+                                output: currentNoiseFloor,
+                                count: count,
+                                quantile: store.noiseQuantile
+                        )
+                }
+                
+                // Apply threshold offset in-place
+                var offset = store.noiseThresholdOffset
+                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
+        }
+        
+        // MARK: - Fit Noise Floor Quantile
+        private func fitNoiseFloorQuantile(magnitudesDB: UnsafePointer<Float>,
+                                           output: UnsafeMutablePointer<Float>,
+                                           count: Int,
+                                           quantile: Float) {
+                let maxIterations = store.noiseFloorMaxIterations
+                let convergenceThreshold = store.noiseFloorConvergenceThreshold
+                let bandwidthSemitones = store.noiseFloorBandwidthSemitones
+                let lambda = store.noiseFloorLambda
+                
+                // Copy previous noise floor as starting point
+                memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)
+                
+                // Iterative quantile regression
+                for _ in 0..<maxIterations {
+                        // Copy current state
+                        memcpy(output, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                        
+                        // Perform quantile regression step
+                        quantileRegressionStepMusical(
+                                data: magnitudesDB,
+                                current: output,
+                                output: tempNoiseFloor,
+                                count: count,
+                                quantile: quantile,
+                                lambda: lambda,
+                                bandwidthSemitones: bandwidthSemitones
+                        )
+                        
+                        // Check convergence
+                        var change: Float = 0
+                        vDSP_vsub(output, 1, tempNoiseFloor, 1, qrResultBuffer, 1, vDSP_Length(count))
+                        vDSP_vabs(qrResultBuffer, 1, qrResultBuffer, 1, vDSP_Length(count))
+                        vDSP_maxv(qrResultBuffer, 1, &change, vDSP_Length(count))
+                        
+                        if change < convergenceThreshold {
+                                break
+                        }
+                }
+                
+                // Final smoothing
+                gaussianSmoothMusical(tempNoiseFloor, output: output, count: count, bandwidthSemitones: bandwidthSemitones / 2)
+        }
+        
+        // MARK: - Quantile Regression with Musical Bandwidth
+        private func quantileRegressionStepMusical(data: UnsafePointer<Float>,
+                                                   current: UnsafeMutablePointer<Float>,
+                                                   output: UnsafeMutablePointer<Float>,
+                                                   count: Int,
+                                                   quantile: Float,
+                                                   lambda: Float,
+                                                   bandwidthSemitones: Float) {
+                let sampleRate = Float(store.audioSampleRate)
+                let binWidth = sampleRate / Float(fftSize)
+                let stepSize = Float(0.6) //store.noiseFloorStepSize // Add to store if needed, or use fixed 0.6
+                
+                // Compute subgradients for quantile loss
+                for i in 0..<count {
+                        let residual = data[i] - current[i]
+                        let subgradient: Float
+                        
+                        if residual > 0 {
+                                subgradient = quantile
+                        } else if residual < 0 {
+                                subgradient = quantile - 1
+                        } else {
+                                subgradient = 0
+                        }
+                        
+                        // Update with gradient descent step
+                        qrResultBuffer[i] = current[i] + stepSize * subgradient
+                }
+                
+                // Apply total variation regularization
+                let tvIterations = 3 // store.noiseFloorTVIterations // Add to store if needed, or use fixed 3
+                for _ in 0..<tvIterations {
+                        memcpy(qrTvBuffer, qrResultBuffer, count * MemoryLayout<Float>.size)
+                        
+                        for i in 1..<(count-1) {
+                                let centerFreq = Float(i) * binWidth
+                                
+                                let freqWeight = centerFreq > 20 ? log10(centerFreq / 20) + 1 : 1
+                                let adjustedLambda = lambda / freqWeight
+                                
+                                let diff1 = qrResultBuffer[i] - qrResultBuffer[i-1]
+                                let diff2 = qrResultBuffer[i+1] - qrResultBuffer[i]
+                                let tvGrad = sign(diff1) - sign(diff2)
+                                qrTvBuffer[i] = qrResultBuffer[i] - adjustedLambda * tvGrad
+                        }
+                        memcpy(qrResultBuffer, qrTvBuffer, count * MemoryLayout<Float>.size)
+                }
+                
+                // Ensure noise floor doesn't exceed data
+                vDSP_vmin(qrResultBuffer, 1, data, 1, output, 1, vDSP_Length(count))
+        }
+        
+        // MARK: - Gaussian Smooth with Musical Bandwidth
+        private func gaussianSmoothMusical(_ data: UnsafeMutablePointer<Float>,
+                                           output: UnsafeMutablePointer<Float>,
+                                           count: Int,
+                                           bandwidthSemitones: Float) {
+                let sampleRate = Float(store.audioSampleRate)
+                let binWidth = sampleRate / Float(fftSize)
+                let sigmaFactor = 1.0//store.noiseFloorSigmaFactor // Add to store if needed, or use fixed 1.0
+                
+                for i in 0..<count {
+                        let centerFreq = Float(i) * binWidth
+                        
+                        // Skip DC and very low frequencies
+                        if centerFreq < 20 {
+                                output[i] = data[i]
+                                continue
+                        }
+                        
+                        // Calculate frequency range for the musical bandwidth
+                        let semitoneRatio = pow(2.0, bandwidthSemitones / 12.0)
+                        let lowerFreq = centerFreq / pow(semitoneRatio, 0.5)
+                        let upperFreq = centerFreq * pow(semitoneRatio, 0.5)
+                        
+                        // Convert to bin indices
+                        let lowerBin = max(0, Int(lowerFreq / binWidth))
+                        let upperBin = min(count - 1, Int(upperFreq / binWidth))
+                        
+                        // Create Gaussian weights
+                        let windowSize = upperBin - lowerBin + 1
+                        let sigma = Float(windowSize) / Float(sigmaFactor)
+                        
+                        var sum: Float = 0
+                        var weightSum: Float = 0
+                        
+                        for j in lowerBin...upperBin {
+                                let distance = Float(j - i)
+                                let weight = exp(-(distance * distance) / (2 * sigma * sigma))
+                                sum += data[j] * weight
+                                weightSum += weight
+                        }
+                        
+                        output[i] = sum / weightSum
+                }
+        }
+        
+        private func initializeNoiseFloor(firstMagnitudeSpectrum: UnsafePointer<Float>, count: Int) {
+                // Copy the magnitude spectrum to the noise floor buffers
+                memcpy(currentNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
+                memcpy(previousNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
+                
+                // Apply heavy smoothing multiple times to get a good initial estimate
+                let initialSmoothingPasses = 10 //store.noiseFloorInitialSmoothingPasses // Add to store if needed
+                for _ in 0..<initialSmoothingPasses {
+                        // Apply moving minimum to remove peaks
+                        movingMinimumInPlace(currentNoiseFloor, output: tempNoiseFloor, count: count, windowSize: 20)
+                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                        
+                        // Apply gaussian smoothing with wide bandwidth
+                        gaussianSmoothMusical(currentNoiseFloor, output: tempNoiseFloor, count: count, bandwidthSemitones: 12.0)
+                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
+                }
+                
+                // Subtract a few dB to ensure we start below the signal
+                var offset = store.noiseThresholdOffset
+                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
+                
+                // Copy to previousNoiseFloor so both start the same
+                memcpy(previousNoiseFloor, currentNoiseFloor, count * MemoryLayout<Float>.size)
+        }
+        
+        // Helper function for moving minimum
+        private func movingMinimumInPlace(_ data: UnsafeMutablePointer<Float>,
+                                          output: UnsafeMutablePointer<Float>,
+                                          count: Int,
+                                          windowSize: Int) {
+                for i in 0..<count {
+                        let start = max(0, i - windowSize/2)
+                        let end = min(count, i + windowSize/2 + 1)
+                        
+                        var minValue: Float = Float.infinity
+                        for j in start..<end {
+                                if data[j] < minValue {
+                                        minValue = data[j]
+                                }
+                        }
+                        output[i] = minValue
+                }
+        }
+        
+        // MARK: - Sign
+        private func sign(_ x: Float) -> Float {
+                if x > 0 { return 1 }
+                else if x < 0 { return -1 }
+                else { return 0 }
+        }
+}
+
+
+
 
 // MARK: - Result Types
 struct StudyResult {
@@ -84,124 +589,73 @@ struct StudyResult {
         let hpsFundamental: Float
         let timestamp: Date
         let processingTime: TimeInterval
+        let zoomSpectrum: [Float]? = nil
+        let zoomFreqeuncies: [Float]? = nil
 }
 
-
-// MARK: - Study Analysis Class
+// MARK: - Simplified Study Class
 final class Study: ObservableObject {
-        // Inputs
+        // Core components
         private let audioProcessor: AudioProcessor
         private let store: TuningParameterStore
-        
-        // Queue
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
+        
+        // FFT processors
+        private let mainFFT: FFTProcessor
+        private let zoomFFT: ZoomFFTProcessor
+        private let hpsProcessor: HPSProcessor
+        private let noiseFloorEstimator: NoiseFloorEstimator
+        
+        private let denoisedBuffer: UnsafeMutablePointer<Float>
+        private let qrResultBuffer: UnsafeMutablePointer<Float>
+        private let qrTvBuffer: UnsafeMutablePointer<Float>
+        
+        // State
         private var isRunning = false
         private var isFirstRun = true
         
-        // HPS
-        private let hpsProcessor: HPSProcessor
-        
-        // FFT configuration
-        private let fftSize: Int
-        private let halfSize: Int
-        private let log2n: vDSP_Length
-        
-        // —— For “in-place real FFT” (vDSP_fft_zript) ——
-        private let fftSetup: FFTSetup                    // C‐API FFT setup
-        private let splitReal: UnsafeMutablePointer<Float> // real part of main SPLIT‐CMPLX (length=halfSize)
-        private let splitImag: UnsafeMutablePointer<Float> // imag part of main SPLIT‐CMPLX (length=halfSize)
-        private var splitComplex: DSPSplitComplex         // (wraps realp & imagp)
-        
-        private let tempReal: UnsafeMutablePointer<Float>  // workspace real (length=halfSize)
-        private let tempImag: UnsafeMutablePointer<Float>  // workspace imag (length=halfSize)
-        private var tempSplit: DSPSplitComplex             // (wraps tempReal & tempImag)
-        
-        // Buffers for windowing & magnitude
-        private let windowBuffer:        UnsafeMutablePointer<Float> // length = fftSize
-        private let windowedAudioBuffer: UnsafeMutablePointer<Float> // length = fftSize
-        private let magnitudeBuffer:     UnsafeMutablePointer<Float> // length = halfSize
-        
-        // Buffers for denoising & frequencies
-        private let denoisedBuffer: UnsafeMutablePointer<Float> // length = halfSize
-        private let frequencyBuffer: UnsafeMutablePointer<Float> // length = halfSize
-        
-        // Noise-floor tracking
-        private let currentNoiseFloor:  UnsafeMutablePointer<Float> // length = halfSize
-        private let previousNoiseFloor: UnsafeMutablePointer<Float> // length = halfSize
-        private let tempNoiseFloor:     UnsafeMutablePointer<Float> // length = halfSize
-        private let noiseFloorAlpha: Float = 1.0
-        
-        // Buffers for quantile regression
-        private let qrResultBuffer: UnsafeMutablePointer<Float> // length = halfSize
-        private let qrTvBuffer:     UnsafeMutablePointer<Float> // length = halfSize
-        
-        // Published (for SwiftUI view binding)
+        // Published results
         @Published var targetOriginalSpectrum: [Float] = []
-        @Published var targetNoiseFloor:       [Float] = []
+        @Published var targetNoiseFloor: [Float] = []
         @Published var targetDenoisedSpectrum: [Float] = []
-        @Published var targetFrequencies:      [Float] = []
-        @Published var targetHPSSpectrum:      [Float] = []
-        @Published var targetHPSFundamental:   Float     = 0
+        @Published var targetFrequencies: [Float] = []
+        @Published var targetHPSSpectrum: [Float] = []
+        @Published var targetHPSFundamental: Float = 0
+        @Published var zoomSpectrum: [Float] = []
+        @Published var zoomFrequencies: [Float] = []
+        @Published var zoomCenterFrequency: Float = 440.0
+        @Published var zoomRangeInCents: Float = 100.0
         
-        //--------------------------------------------------------------------------------
         init(audioProcessor: AudioProcessor, store: TuningParameterStore) {
                 self.audioProcessor = audioProcessor
                 self.store = store
-                self.fftSize = store.fftSize
-                self.halfSize = fftSize / 2
-                self.log2n = vDSP_Length(log2(Float(fftSize)))
-                self.hpsProcessor = HPSProcessor(spectrumSize: halfSize, harmonicProfile: [1.0])
                 
-                // 1) Create a C‐API FFT setup for “real-to-complex (in-place)”
-                guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-                        fatalError("Failed to create FFT setup")
-                }
-                self.fftSetup = setup
+                let fftSize = store.fftSize
+                let halfSize = fftSize / 2
                 
-                // 2) Allocate the main DSPSplitComplex (this is where we’ll pack and overwrite in-place)
-                self.splitReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.splitImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                // Always zero the imaginary part initially
-                self.splitImag.initialize(repeating: 0, count: halfSize)
-                self.splitReal.initialize(repeating: 0, count: halfSize)
-                self.splitComplex = DSPSplitComplex(realp: splitReal, imagp: splitImag)
+                // Initialize FFT processors
+                self.mainFFT = FFTProcessor(fftSize: fftSize)
+                self.zoomFFT = ZoomFFTProcessor(
+                        zoomFFTSize: 2048,
+                        decimationFactor: 16,
+                        originalFFTSize: fftSize
+                )
+                self.hpsProcessor = HPSProcessor(
+                        spectrumSize: halfSize,
+                        harmonicProfile: [1.0]
+                )
+                self.noiseFloorEstimator = NoiseFloorEstimator(store: self.store)
                 
-                // 3) Allocate the “temp” DSPSplitComplex (workspace) for zRIP:
-                self.tempReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.tempImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.tempReal.initialize(repeating: 0, count: halfSize)
-                self.tempImag.initialize(repeating: 0, count: halfSize)
-                self.tempSplit = DSPSplitComplex(realp: tempReal, imagp: tempImag)
+                // Initialize windows and frequencies
+                mainFFT.initializeBlackmanHarrisWindow()
+                mainFFT.initializeFrequencies(sampleRate: Float(store.audioSampleRate))
                 
-                // 4) Allocate window + windowed‐audio buffers
-                self.windowBuffer        = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-                self.windowedAudioBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
                 
-                // 5) Allocate a buffer for the magnitude (halfSize)
-                self.magnitudeBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.magnitudeBuffer.initialize(repeating: 0, count: halfSize)
+                // Allocate processing buffers
+                self.denoisedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.qrResultBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
+                self.qrTvBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
                 
-                // 6) Allocate “denoised” + “frequency” + noise‐floor + QR buffers
-                self.denoisedBuffer     = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.frequencyBuffer    = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.currentNoiseFloor  = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.previousNoiseFloor = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.tempNoiseFloor     = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.qrResultBuffer     = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.qrTvBuffer         = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                
-                // Initialize frequencyBuffer once
-                generateFrequencyArray(into: frequencyBuffer, count: halfSize, sampleRate: Float(store.audioSampleRate))
-                
-                // Initialize window (Blackman-Harris)
-                generateBlackmanHarrisWindow(into: windowBuffer, size: fftSize)
-                
-                // Initialize noise‐floor arrays to a low dB value (e.g. –60 dB)
-                currentNoiseFloor.initialize(repeating: -60, count: halfSize)
-                previousNoiseFloor.initialize(repeating: -60, count: halfSize)
-                tempNoiseFloor.initialize(repeating: -60, count: halfSize)
-                
-                // Zero out other buffers
                 denoisedBuffer.initialize(repeating: 0, count: halfSize)
                 qrResultBuffer.initialize(repeating: 0, count: halfSize)
                 qrTvBuffer.initialize(repeating: 0, count: halfSize)
@@ -209,28 +663,7 @@ final class Study: ObservableObject {
         
         deinit {
                 isRunning = false
-                
-                // Destroy the FFT setup
-                vDSP_destroy_fftsetup(fftSetup)
-                
-                // Deallocate every pointer we allocated
-                splitReal.deallocate()
-                splitImag.deallocate()
-                
-                tempReal.deallocate()
-                tempImag.deallocate()
-                
-                windowBuffer.deallocate()
-                windowedAudioBuffer.deallocate()
-                magnitudeBuffer.deallocate()
-                
                 denoisedBuffer.deallocate()
-                frequencyBuffer.deallocate()
-                
-                currentNoiseFloor.deallocate()
-                previousNoiseFloor.deallocate()
-                tempNoiseFloor.deallocate()
-                
                 qrResultBuffer.deallocate()
                 qrTvBuffer.deallocate()
         }
@@ -266,6 +699,8 @@ final class Study: ObservableObject {
                                         self?.targetFrequencies      = result.frequencies
                                         self?.targetHPSSpectrum      = result.hpsSpectrum
                                         self?.targetHPSFundamental   = result.hpsFundamental
+//                                        self?.zoomSpectrum           = result.zoomSpectrum
+//                                        self?.zoomFrequencies        = result.zoomFreqeuncies
                                 }
                         }
                         Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update
@@ -276,324 +711,67 @@ final class Study: ObservableObject {
         private func perform(audioWindow: [Float]) -> StudyResult {
                 let overallStart = CFAbsoluteTimeGetCurrent()
                 
-                // 1️⃣ Apply window (time‐domain multiply)
+                // Perform main FFT
                 audioWindow.withUnsafeBufferPointer { audioPtr in
-                        vDSP_vmul(
-                                audioPtr.baseAddress!, 1,
-                                windowBuffer,           1,
-                                windowedAudioBuffer,    1,
-                                vDSP_Length(fftSize)
-                        )
+                        mainFFT.performFFT(input: audioPtr.baseAddress!)
                 }
+                mainFFT.convertMagnitudesToDB()
                 
-                // 2️⃣ Pack real data → splitComplex (even‐odd) using vDSP_ctoz(stride:2)
-                windowedAudioBuffer.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
-                        vDSP_ctoz(
-                                complexPtr,   2,              // stride=2: (x[2*i], x[2*i+1]) → DSPComplex
-                                &splitComplex, 1,             // destination, stride=1
-                                vDSP_Length(halfSize)
-                        )
-                }
-                // Now splitComplex.realp[i] = windowedAudioBuffer[2*i]
-                //     splitComplex.imagp[i] = windowedAudioBuffer[2*i + 1]
-                
-                // 3️⃣ Forward real FFT → in-place (use tempSplit as workspace)
-                vDSP_fft_zript(
-                        fftSetup,
-                        &splitComplex,    // input/output (packed real → packed spectrum)
-                        1,                // stride = 1
-                        &tempSplit,       // workspace (realp/imagp each length = halfSize)
-                        log2n,
-                        FFTDirection(FFT_FORWARD)
+                // Estimate noise floor
+                let noiseFloor = noiseFloorEstimator.estimateNoiseFloor(
+                        magnitudesDB: mainFFT.magnitudeBuffer,
+                        frequencies: mainFFT.frequencyBuffer,
                 )
                 
-                // 4️⃣ Compute |X[k]|^2 for each bin (packed length = halfSize)
-                vDSP_zvmags(
-                        &splitComplex,    // splitComplex now contains packed frequency bins
-                        1,                // stride = 1
-                        magnitudeBuffer,  // output array = |real + i*imag|^2
-                        1,
-                        vDSP_Length(halfSize)
-                )
-                
-                // 5️⃣ Scale magnitudes by (2/fftSize)
-                var scaleFactor: Float = 2.0 / Float(fftSize)
-                vDSP_vsmul(
-                        magnitudeBuffer, 1,
-                        &scaleFactor,
-                        magnitudeBuffer, 1,
-                        vDSP_Length(halfSize)
-                )
-                
-                // 6️⃣ Convert to dB
-                var floorDB: Float   = 1e-10
-                var ceilingDB: Float = .greatestFiniteMagnitude
-                vDSP_vclip(
-                        magnitudeBuffer, 1,
-                        &floorDB, &ceilingDB,
-                        magnitudeBuffer, 1,
-                        vDSP_Length(halfSize)
-                )
-                var reference: Float = 1.0
-                vDSP_vdbcon(
-                        magnitudeBuffer, 1,
-                        &reference,
-                        magnitudeBuffer, 1,
-                        vDSP_Length(halfSize),
-                        1 // use 10*log10(x) style
-                )
-                
-                // 7️⃣ Noise‐floor estimation (quantile regression, etc.)
-                if isFirstRun {
-                        initializeNoiseFloor(
-                                firstMagnitudeSpectrum: magnitudeBuffer,
-                                count: halfSize
-                        )
-                        isFirstRun = false
-                }
-                fitNoiseFloor(
-                        magnitudesDB: magnitudeBuffer,
-                        frequencies:  frequencyBuffer,
-                        count:        halfSize,
-                        store:        store
-                )
-                var α: Float         = noiseFloorAlpha
-                var oneMinusα: Float = 1 - noiseFloorAlpha
-                vDSP_vsmul(currentNoiseFloor, 1, &α,           tempNoiseFloor, 1, vDSP_Length(halfSize))
-                vDSP_vsmul(previousNoiseFloor, 1, &oneMinusα, previousNoiseFloor, 1, vDSP_Length(halfSize))
-                vDSP_vadd(tempNoiseFloor, 1, previousNoiseFloor, 1, currentNoiseFloor, 1, vDSP_Length(halfSize))
-                memcpy(previousNoiseFloor, currentNoiseFloor, halfSize * MemoryLayout<Float>.size)
-                
-                // 8️⃣ Denoise
+                // Denoise spectrum
                 denoiseSpectrum(
-                        magnitudesDB: magnitudeBuffer,
-                        noiseFloorDB: currentNoiseFloor,
-                        output:       denoisedBuffer,
-                        count:        halfSize
+                        magnitudesDB: mainFFT.magnitudeBuffer,
+                        noiseFloorDB: noiseFloor,
+                        output: denoisedBuffer,
+                        count: mainFFT.halfSize
                 )
                 
-                // 9️⃣ Harmonic Product Spectrum
+                // Compute HPS
                 let (hpsFundamental, hpsSpectrum) = hpsProcessor.computeHPS(
                         magnitudes: denoisedBuffer,
-                        count:      halfSize,
+                        count: mainFFT.halfSize,
                         sampleRate: Float(store.audioSampleRate)
                 )
                 
-                // 🔟 Package results
-                let magnitudesDBArray = Array( UnsafeBufferPointer(start: magnitudeBuffer,  count: halfSize) )
-                let noiseFloorArray   = Array( UnsafeBufferPointer(start: currentNoiseFloor, count: halfSize) )
-                let denoisedArray     = Array( UnsafeBufferPointer(start: denoisedBuffer,   count: halfSize) )
-                let freqsArray        = Array( UnsafeBufferPointer(start: frequencyBuffer,  count: halfSize) )
+                // Perform Zoom FFT
+//                let centerHz = Float(store.targetNote.frequency(concertA: store.concertPitch))
+//                let (lowerHz, upperHz) = Note.calculateZoomCenterFrequency(centerFreq: centerHz, totalWindowCents: 100.0)
+//                let (zoomSpec, zoomFreqs) = audioWindow.withUnsafeBufferPointer { audioPtr in
+//                        zoomFFT.performZoomFFT(
+//                                audioWindow: audioPtr.baseAddress!,
+//                                lowerHz: lowerHz,
+//                                centerHz: centerHz,
+//                                upperHz: upperHz,
+//                                sampleRate: Float(store.audioSampleRate)
+//                        )
+//                }
                 
-                let processingTime = CFAbsoluteTimeGetCurrent() - overallStart
-                
+                store.centsError = hpsFundamental - store.targetNote.frequency(concertA: store.concertPitch)
+                // Package and return results
                 return StudyResult(
-                        originalSpectrum:  magnitudesDBArray,
-                        noiseFloor:       noiseFloorArray,
-                        denoisedSpectrum: denoisedArray,
-                        frequencies:      freqsArray,
-                        hpsSpectrum:      hpsSpectrum,
-                        hpsFundamental:   hpsFundamental,
-                        timestamp:        Date(),
-                        processingTime:   processingTime
+                        originalSpectrum: Array(UnsafeBufferPointer(start: mainFFT.magnitudeBuffer, count: mainFFT.halfSize)),
+                        noiseFloor: Array(UnsafeBufferPointer(start: noiseFloor, count: mainFFT.halfSize)),
+                        denoisedSpectrum: Array(UnsafeBufferPointer(start: denoisedBuffer, count: mainFFT.halfSize)),
+                        frequencies: Array(UnsafeBufferPointer(start: mainFFT.frequencyBuffer, count: mainFFT.halfSize)),
+                        hpsSpectrum: hpsSpectrum,
+                        hpsFundamental: hpsFundamental,
+                        timestamp: Date(),
+                        processingTime: CFAbsoluteTimeGetCurrent() - overallStart,
+//                        zoomSpectrum: zoomSpec,
+//                        zoomFreqeuncies: zoomFreqs,
                 )
         }
-        
-        // MARK: - Generate Frequency Array
-        private func generateFrequencyArray(into buffer: UnsafeMutablePointer<Float>, count: Int, sampleRate: Float) {
-                let binWidth = sampleRate / Float(count * 2)
-                for i in 0..<count {
-                        buffer[i] = Float(i) * binWidth
-                }
-        }
-        
-        // MARK: - Sign
-        private func sign(_ x: Float) -> Float {
-                if x > 0 { return 1 }
-                else if x < 0 { return -1 }
-                else { return 0 }
-        }
-        
-        
-        private func generateBlackmanHarrisWindow(into buffer: UnsafeMutablePointer<Float>, size: Int) {
-                let a0: Float = 0.35875
-                let a1: Float = 0.48829
-                let a2: Float = 0.14128
-                let a3: Float = 0.01168
-                
-                for i in 0..<size {
-                        let n = Float(i)
-                        let N = Float(size - 1)
-                        let term1 = a1 * cos(2.0 * .pi * n / N)
-                        let term2 = a2 * cos(4.0 * .pi * n / N)
-                        let term3 = a3 * cos(6.0 * .pi * n / N)
-                        buffer[i] = a0 - term1 + term2 - term3
-                }
-        }
-        
-        // MARK: - Fit Noise Floor
-        private func fitNoiseFloor(magnitudesDB: UnsafeMutablePointer<Float>,
-                                   frequencies: UnsafeMutablePointer<Float>,
-                                   count: Int,
-                                   store: TuningParameterStore) {
-                
-                switch store.noiseMethod {
-                case .quantileRegression:
-                        fitNoiseFloorQuantile(
-                                magnitudesDB: magnitudesDB,
-                                output: currentNoiseFloor,
-                                count: count,
-                                quantile: store.noiseQuantile,
-                        )
-                }
-                
-                // Apply threshold offset in-place
-                var offset = store.noiseThresholdOffset
-                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
-        }
-        
-        // MARK: - Fit Noise Floor Quantile
-        private func fitNoiseFloorQuantile(magnitudesDB: UnsafeMutablePointer<Float>,
-                                           output: UnsafeMutablePointer<Float>,
-                                           count: Int,
-                                           quantile: Float) {
-                let maxIterations = store.noiseFloorMaxIterations
-                let convergenceThreshold: Float = store.noiseFloorConvergenceThreshold
-                let bandwidthSemitones: Float = store.noiseFloorBandwidthSemitones
-                
-                // Copy previous noise floor as starting point
-                memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)
-                
-                // Iterative quantile regression
-                for _ in 0..<maxIterations {
-                        // Copy current state
-                        memcpy(output, tempNoiseFloor, count * MemoryLayout<Float>.size)
-                        
-                        // Perform quantile regression step
-                        quantileRegressionStepMusical(
-                                data: magnitudesDB,
-                                current: output,
-                                output: tempNoiseFloor,
-                                count: count,
-                                quantile: quantile,
-                                lambda: 10, // TODO: is this redunant?
-                                bandwidthSemitones: bandwidthSemitones
-                        )
-                        
-                        // Check convergence
-                        var change: Float = 0
-                        vDSP_vsub(output, 1, tempNoiseFloor, 1, qrResultBuffer, 1, vDSP_Length(count))
-                        vDSP_vabs(qrResultBuffer, 1, qrResultBuffer, 1, vDSP_Length(count))
-                        vDSP_maxv(qrResultBuffer, 1, &change, vDSP_Length(count))
-                        
-                        if change < convergenceThreshold {
-                                break
-                        }
-                }
-                
-                // Final smoothing
-                gaussianSmoothMusical(tempNoiseFloor, output: output, count: count, bandwidthSemitones: bandwidthSemitones / 2)
-        }
-        
-        // MARK: - Quantile Regression with Musical Bandwidth
-        private func quantileRegressionStepMusical(data: UnsafeMutablePointer<Float>,
-                                                   current: UnsafeMutablePointer<Float>,
-                                                   output: UnsafeMutablePointer<Float>,
-                                                   count: Int,
-                                                   quantile: Float,
-                                                   lambda: Float,
-                                                   bandwidthSemitones: Float) {
-                let sampleRate = Float(store.audioSampleRate)
-                let binWidth = sampleRate / Float(fftSize)
-                
-                // Compute subgradients for quantile loss
-                for i in 0..<count {
-                        let residual = data[i] - current[i]
-                        let subgradient: Float
-                        
-                        if residual > 0 {
-                                subgradient = quantile
-                        } else if residual < 0 {
-                                subgradient = quantile - 1
-                        } else {
-                                subgradient = 0
-                        }
-                        
-                        // Update with gradient descent step
-                        qrResultBuffer[i] = current[i] + 0.6 * subgradient
-                }
-                
-                // Apply total variation regularization
-                for _ in 0..<3 {
-                        memcpy(qrTvBuffer, qrResultBuffer, count * MemoryLayout<Float>.size)
-                        
-                        for i in 1..<(count-1) {
-                                let centerFreq = Float(i) * binWidth
-                                
-                                let freqWeight = centerFreq > 20 ? log10(centerFreq / 20) + 1 : 1
-                                let adjustedLambda = lambda / freqWeight
-                                
-                                let diff1 = qrResultBuffer[i] - qrResultBuffer[i-1]
-                                let diff2 = qrResultBuffer[i+1] - qrResultBuffer[i]
-                                let tvGrad = sign(diff1) - sign(diff2)
-                                qrTvBuffer[i] = qrResultBuffer[i] - adjustedLambda * tvGrad
-                        }
-                        memcpy(qrResultBuffer, qrTvBuffer, count * MemoryLayout<Float>.size)
-                }
-                
-                // Ensure noise floor doesn't exceed data
-                vDSP_vmin(qrResultBuffer, 1, data, 1, output, 1, vDSP_Length(count))
-        }
-        
-        // MARK: - Gaussian Smooth with Musical Bandwidth
-        private func gaussianSmoothMusical(_ data: UnsafeMutablePointer<Float>,
-                                           output: UnsafeMutablePointer<Float>,
-                                           count: Int,
-                                           bandwidthSemitones: Float) {
-                let sampleRate = Float(store.audioSampleRate)
-                let binWidth = sampleRate / Float(fftSize)
-                
-                for i in 0..<count {
-                        let centerFreq = Float(i) * binWidth
-                        
-                        // Skip DC and very low frequencies
-                        if centerFreq < 20 {
-                                output[i] = data[i]
-                                continue
-                        }
-                        
-                        // Calculate frequency range for the musical bandwidth
-                        let semitoneRatio = pow(2.0, bandwidthSemitones / 12.0)
-                        let lowerFreq = centerFreq / pow(semitoneRatio, 0.5)
-                        let upperFreq = centerFreq * pow(semitoneRatio, 0.5)
-                        
-                        // Convert to bin indices
-                        let lowerBin = max(0, Int(lowerFreq / binWidth))
-                        let upperBin = min(count - 1, Int(upperFreq / binWidth))
-                        
-                        // Create Gaussian weights
-                        let windowSize = upperBin - lowerBin + 1
-                        let sigma = Float(windowSize) / 1.0
-                        
-                        var sum: Float = 0
-                        var weightSum: Float = 0
-                        
-                        for j in lowerBin...upperBin {
-                                let distance = Float(j - i)
-                                let weight = exp(-(distance * distance) / (2 * sigma * sigma))
-                                sum += data[j] * weight
-                                weightSum += weight
-                        }
-                        
-                        output[i] = sum / weightSum
-                }
-        }
-        
-        // MARK: - Denoising
-        private func denoiseSpectrum(magnitudesDB: UnsafeMutablePointer<Float>,
-                                     noiseFloorDB: UnsafeMutablePointer<Float>,
-                                     output: UnsafeMutablePointer<Float>,
-                                     count: Int) {
+
+        // MARK: - Separate Denoising Function (moved out of NoiseFloorEstimator)
+        func denoiseSpectrum(magnitudesDB: UnsafePointer<Float>,
+                             noiseFloorDB: UnsafePointer<Float>,
+                             output: UnsafeMutablePointer<Float>,
+                             count: Int) {
                 // Subtract noise floor from signal
                 vDSP_vsub(noiseFloorDB, 1, magnitudesDB, 1, output, 1, vDSP_Length(count))
                 
@@ -603,46 +781,4 @@ final class Study: ObservableObject {
                 vDSP_vclip(output, 1, &zero, &ceiling, output, 1, vDSP_Length(count))
         }
 
-        private func initializeNoiseFloor(firstMagnitudeSpectrum: UnsafeMutablePointer<Float>, count: Int) {
-                // Copy the magnitude spectrum to the noise floor buffers
-                memcpy(currentNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
-                memcpy(previousNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)
-                
-                // Apply heavy smoothing multiple times to get a good initial estimate
-                for _ in 0..<3 {
-                        // Apply moving minimum to remove peaks
-                        movingMinimumInPlace(currentNoiseFloor, output: tempNoiseFloor, count: count, windowSize: 20)
-                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
-                        
-                        // Apply gaussian smoothing with wide bandwidth
-                        gaussianSmoothMusical(currentNoiseFloor, output: tempNoiseFloor, count: count, bandwidthSemitones: 12.0)
-                        memcpy(currentNoiseFloor, tempNoiseFloor, count * MemoryLayout<Float>.size)
-                }
-                
-                // Subtract a few dB to ensure we start below the signal
-                var offset: Float = -3.0
-                vDSP_vsadd(currentNoiseFloor, 1, &offset, currentNoiseFloor, 1, vDSP_Length(count))
-                
-                // Copy to previousNoiseFloor so both start the same
-                memcpy(previousNoiseFloor, currentNoiseFloor, count * MemoryLayout<Float>.size)
-        }
-        
-        // Helper function for moving minimum
-        private func movingMinimumInPlace(_ data: UnsafeMutablePointer<Float>,
-                                          output: UnsafeMutablePointer<Float>,
-                                          count: Int,
-                                          windowSize: Int) {
-                for i in 0..<count {
-                        let start = max(0, i - windowSize/2)
-                        let end = min(count, i + windowSize/2 + 1)
-                        
-                        var minValue: Float = Float.infinity
-                        for j in start..<end {
-                                if data[j] < minValue {
-                                        minValue = data[j]
-                                }
-                        }
-                        output[i] = minValue
-                }
-        }
 }

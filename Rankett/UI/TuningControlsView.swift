@@ -15,7 +15,7 @@ struct TuningControlsView: View {
         var body: some View {
                 VStack(spacing: 12) {
                         // Carousel Pitch Display
-                        CarouselPitchDisplay(centsError: store.centsError)
+                        CarouselPitchDisplay(centsError: Double(store.centsError))
                                 .frame(height: 60)
                         
                         // Numerical Pitch Display
@@ -27,8 +27,8 @@ struct TuningControlsView: View {
                         .frame(height: 50)
                         
                         // Target pitch controls
-                        TargetPitchRow(
-                                targetPitch: $store.targetPitch,
+                        TargetNoteRow(
+                                targetNote: $store.targetNote,
                                 incrementSemitones: $store.pitchIncrementSemitones
                         )
                         .frame(height: 70) // Slightly taller as specified

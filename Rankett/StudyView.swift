@@ -193,7 +193,7 @@ final class StudyGraphView: UIView {
         private var plots: [Plot] = [
                 Plot(color: .systemBlue.withAlphaComponent(0.5), name: "Original", lineWidth: 0.8),
                 Plot(color: .systemRed, name: "Noise Floor", lineWidth: 0.8),
-                Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
+//                Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
                 Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
         ]
         
@@ -256,14 +256,14 @@ final class StudyGraphView: UIView {
                         
                 case .threeOctaves:
                         // Three octaves above target pitch, starting at -1 semitone
-                        let baseFreq = Float(store.targetPitch) * pow(2, -1.0/12.0)
-                        let maxFreq = baseFreq * 8.0 // 3 octaves = 2^3 = 8x
+                        let baseFreq = Float(store.targetNote.transposed(by: -1).frequency(concertA: store.concertPitch))
+                        let maxFreq = Float(store.targetNote.transposed(by: 12 * 3).frequency(concertA: store.concertPitch))
                         currentMinFreq = baseFreq
                         currentMaxFreq = min(maxFreq, Float(store.renderMaxFrequency))
                         
                 case .targetFundamental:
                         // ±50 cents around target pitch
-                        let centerFreq = Float(store.targetPitch)
+                        let centerFreq = Float(store.targetNote.frequency(concertA: store.concertPitch))
                         currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
                         currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
@@ -491,7 +491,7 @@ final class StudyGraphView: UIView {
                         while freq <= currentMaxFreq {
                                 if zoomState == .targetFundamental {
                                         // Show as cents relative to target
-                                        let target = Float(store.targetPitch)
+                                        let target = Float(store.targetNote.frequency(concertA: store.concertPitch))
                                         let cents = 1200 * log2(freq / target)
                                         lines.append((freq, String(format: "%+.0fc", cents)))
                                 } else {

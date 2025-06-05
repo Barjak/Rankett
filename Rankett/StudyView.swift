@@ -1,15 +1,32 @@
 import SwiftUI
 import UIKit
 
-//-----------------------------------------
-// 1) StudyView now takes both a Study and the shared TuningParameterStore
-//-----------------------------------------
+// MARK: - Simple Plot Data Structure
+struct Plot {
+        var current: [Float] = []
+        var target: [Float] = []
+        let color: UIColor
+        let name: String
+        let lineWidth: CGFloat
+        
+        mutating func smooth(_ factor: Float) {
+                guard current.count == target.count else {
+                        current = target
+                        return
+                }
+                let beta = 1.0 - factor
+                for i in 0..<current.count {
+                        current[i] = current[i] * factor + target[i] * beta
+                }
+        }
+}
+
+// MARK: - Main View
 struct StudyView: UIViewRepresentable {
         @ObservedObject var study: Study
         @ObservedObject var store: TuningParameterStore
         
         func makeUIView(context: Context) -> StudyGraphView {
-                // Pass the store into the view’s initializer:
                 let view = StudyGraphView(store: store)
                 view.backgroundColor = .black
                 view.isOpaque = true
@@ -18,95 +35,59 @@ struct StudyView: UIViewRepresentable {
         }
         
         func updateUIView(_ uiView: StudyGraphView, context: Context) {
-                // 1) First, refresh the view’s “data” from `study` (exactly as before)
                 uiView.updateTargets(
                         originalSpectrum: study.targetOriginalSpectrum,
-                        noiseFloor:        study.targetNoiseFloor,
-                        denoisedSpectrum:  study.targetDenoisedSpectrum,
-                        frequencies:       study.targetFrequencies,
-                        hpsSpectrum:       study.targetHPSSpectrum,
-                        hpsFundamental:    study.targetHPSFundamental
+                        noiseFloor: study.targetNoiseFloor,
+                        denoisedSpectrum: study.targetDenoisedSpectrum,
+                        frequencies: study.targetFrequencies,
+                        hpsSpectrum: study.targetHPSSpectrum,
+                        hpsFundamental: study.targetHPSFundamental
                 )
-                
-                // 2) Then, if anything in `store` changed that affects drawing––for example,
-                //    if you want to react to a new frameInterval or any other tuning parameter––
-                //    you can force a redraw. In most cases, you only need to do this if
-                //    the store holds something that changes the way you paint.
-                //
-                //    If you rely solely on the timer already running inside StudyGraphView
-                //    (see below) to drive redrawing, you might not have to call setNeedsDisplay()
-                //    here. But if you add new “properties” in your store that should trigger
-                //    an immediate UI change (e.g. a color‐scheme toggle, or a toggle of a threshold),
-                //    you can call:
-                //
-                //    uiView.setNeedsDisplay()
-                //
-                //    That way, StudyGraphView.draw(_:) will run with the latest `store` values.
-                
                 uiView.setNeedsDisplay()
         }
 }
 
-
-//-----------------------------------------
-// 2) StudyGraphView now takes a plain store reference
-//-----------------------------------------
 final class StudyGraphView: UIView {
-
         private let store: TuningParameterStore
-        
-        // The timer that drives redraws
         private var displayTimer: Timer?
         
-        // (All your “current” / “target” data buffers, locks, etc. remain exactly the same)
-        private var currentOriginal: [Float] = []
-        private var currentNoiseFloor: [Float] = []
-        private var currentDenoised: [Float] = []
-        private var currentFrequencies: [Float] = []
-
-        private var smoothedPeakPositions: [Float: CGPoint] = [:]
+        // Pre-allocated plots
+        private var plots: [Plot] = [
+                Plot(color: .systemBlue.withAlphaComponent(0.5), name: "Original", lineWidth: 0.8),
+                Plot(color: .systemRed, name: "Noise Floor", lineWidth: 0.8),
+                Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
+                Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
+        ]
         
-        private var targetOriginal: [Float] = []
-        private var targetNoiseFloor: [Float] = []
-        private var targetDenoised: [Float] = []
-        private var targetFrequencies: [Float] = []
-
-        
-        private var currentHPSSpectrum: [Float] = []
-        private var targetHPSSpectrum: [Float] = []
-        private var currentHPSFundamental: Float = 0
+        // Special HPS data
+        private var hpsFundamental: Float = 0
         private var targetHPSFundamental: Float = 0
         
+        private var frequencies: [Float] = []
         private var binMapper: BinMapper?
         private let dataLock = NSLock()
         
-        // MARK: – Init
-        /// We force callers to use `init(store:)` so that `store` is set before setupTimer() runs.
+        // Drawing constants from store
+        private var padding: CGFloat { 40 }
+        private var minDB: Float { -80 }
+        private var maxDB: Float { 180 }
+        
         init(store: TuningParameterStore) {
                 self.store = store
                 super.init(frame: .zero)
                 setupTimer()
         }
         
-        // We deliberately do NOT support init(frame:) or init(coder:) directly,
-        // because we want to guarantee `store` is always provided.
-        @available(*, unavailable)
-        override init(frame: CGRect) {
-                fatalError("Use init(store:) instead")
-        }
-        
         @available(*, unavailable)
         required init?(coder: NSCoder) {
-                fatalError("Use init(store:) instead")
+                fatalError("Use init(store:)")
         }
         
         deinit {
                 displayTimer?.invalidate()
         }
         
-        // MARK: – Timer Setup
         private func setupTimer() {
-
                 displayTimer = Timer.scheduledTimer(
                         withTimeInterval: store.frameInterval,
                         repeats: true
@@ -115,236 +96,132 @@ final class StudyGraphView: UIView {
                 }
         }
         
-        func updateTargets(originalSpectrum: [Float], noiseFloor: [Float], denoisedSpectrum: [Float],
-                           frequencies: [Float],
+        func updateTargets(originalSpectrum: [Float], noiseFloor: [Float],
+                           denoisedSpectrum: [Float], frequencies: [Float],
                            hpsSpectrum: [Float], hpsFundamental: Float) {
                 dataLock.lock()
                 defer { dataLock.unlock() }
                 
                 guard !originalSpectrum.isEmpty else { return }
                 
-                // Create bin mapper if needed
+                // Update bin mapper if needed
                 if binMapper == nil || binMapper?.binFrequencies.count != store.downscaleBinCount {
                         binMapper = BinMapper(store: store, halfSize: originalSpectrum.count)
                 }
                 
-                // Map full resolution data to display bins
-                if let mapper = binMapper {
-                        targetOriginal = mapper.mapSpectrum(originalSpectrum)
-                        targetNoiseFloor = mapper.mapSpectrum(noiseFloor)
-                        targetDenoised = mapper.mapSpectrum(denoisedSpectrum)
-                        targetFrequencies = mapper.binFrequencies
-                        
-                        // Bin-map HPS spectrum too
-                        // Note: HPS spectrum is shorter, so we need to handle it specially
-                        targetHPSSpectrum = mapper.mapHPSSpectrum(hpsSpectrum)
-                }
+                guard let mapper = binMapper else { return }
                 
-                targetHPSFundamental = hpsFundamental
+                // Map all spectra to display bins
+                plots[0].target = mapper.mapSpectrum(originalSpectrum)
+                plots[1].target = mapper.mapSpectrum(noiseFloor)
+                plots[2].target = mapper.mapSpectrum(denoisedSpectrum)
+                plots[3].target = mapper.mapHPSSpectrum(hpsSpectrum)
                 
-                // Initialize current data if empty
-                if currentOriginal.isEmpty {
-                        currentOriginal = targetOriginal
-                        currentNoiseFloor = targetNoiseFloor
-                        currentDenoised = targetDenoised
-                        currentFrequencies = targetFrequencies
-                        currentHPSSpectrum = targetHPSSpectrum
-                        currentHPSFundamental = targetHPSFundamental
+                self.frequencies = mapper.binFrequencies
+                self.targetHPSFundamental = hpsFundamental
+                
+                // Initialize current if empty
+                for i in 0..<plots.count {
+                        if plots[i].current.isEmpty {
+                                plots[i].current = plots[i].target
+                        }
                 }
         }
         
         private func updateDisplay() {
                 dataLock.lock()
                 
-                // Smooth interpolation
-                let alpha = store.animationSmoothingFactor
-                let beta = 1.0 - alpha
-                
-                // Smooth spectrum data
-                if targetOriginal.count == currentOriginal.count {
-                        for i in 0..<currentOriginal.count {
-                                currentOriginal[i] = currentOriginal[i] * alpha + targetOriginal[i] * beta
-                                currentNoiseFloor[i] = currentNoiseFloor[i] * alpha + targetNoiseFloor[i] * beta
-                                currentDenoised[i] = currentDenoised[i] * alpha + targetDenoised[i] * beta
-                        }
+                // Smooth all plots
+                let factor = store.animationSmoothingFactor
+                for i in 0..<plots.count {
+                        plots[i].smooth(factor)
                 }
                 
-                currentFrequencies = targetFrequencies
-                
-                if targetHPSSpectrum.count == currentHPSSpectrum.count {
-                        for i in 0..<currentHPSSpectrum.count {
-                                currentHPSSpectrum[i] = currentHPSSpectrum[i] * alpha + targetHPSSpectrum[i] * beta
-                        }
-                }
-                currentHPSFundamental = currentHPSFundamental * alpha + targetHPSFundamental * beta
+                // Smooth HPS fundamental
+                let beta = 1.0 - factor
+                hpsFundamental = hpsFundamental * factor + targetHPSFundamental * beta
                 
                 dataLock.unlock()
                 setNeedsDisplay()
         }
-        // In StudyGraphView, update the draw method:
+        
         override func draw(_ rect: CGRect) {
                 guard let ctx = UIGraphicsGetCurrentContext() else { return }
                 
                 dataLock.lock()
-                let originalDB = currentOriginal
-                let noiseFloorDB = currentNoiseFloor
-                let denoisedDB = currentDenoised
-                let frequencies = currentFrequencies
-                let hpsSpectrum = currentHPSSpectrum
+                let plotData = plots.map { ($0.current, $0.color, $0.lineWidth) }
+                let freq = frequencies
+                let fundamental = hpsFundamental
                 dataLock.unlock()
                 
-                guard !originalDB.isEmpty else { return }
+                guard !freq.isEmpty else { return }
                 
-                let verticalPadding: CGFloat = 40
-                let rightMargin: CGFloat = 40 // Space for SNR scale
-                let width = rect.width - rightMargin
-                let height = rect.height - 2 * verticalPadding
-                
-                // Draw background
+                // Drawing setup
                 ctx.setFillColor(UIColor.black.cgColor)
                 ctx.fill(rect)
                 
-                // Fixed dB range
-                let minDB: Float = -80
-                let maxDB: Float = 180
-                let dbRange = maxDB - minDB
+                let drawRect = CGRect(x: 0, y: padding,
+                                      width: rect.width - padding,
+                                      height: rect.height - 2 * padding)
                 
                 // Draw grid
-                drawGrid(ctx: ctx, rect: rect, verticalPadding: verticalPadding,
-                         rightMargin: rightMargin, minDB: minDB, maxDB: maxDB)
+                drawGrid(ctx: ctx, in: rect)
                 
+                // Draw all plots
                 ctx.saveGState()
-                ctx.translateBy(x: 0, y: verticalPadding)
+                ctx.translateBy(x: 0, y: padding)
                 
-                // Draw curves
-//                drawSpectrumCurve(ctx: ctx, data: originalDB, frequencies: frequencies,
-//                                  width: width, height: height,
-//                                  minDB: minDB, dbRange: dbRange,
-//                                  color: UIColor.systemBlue.withAlphaComponent(0.8))
-//                
-//                drawSpectrumCurve(ctx: ctx, data: noiseFloorDB, frequencies: frequencies,
-//                                  width: width, height: height,
-//                                  minDB: minDB, dbRange: dbRange, color: UIColor.systemRed)
+                for (data, color, lineWidth) in plotData {
+                        drawSpectrum(ctx: ctx, data: data, frequencies: freq,
+                                     in: drawRect, color: color, lineWidth: lineWidth)
+                }
                 
-//                drawDenoisedSpectrum(ctx: ctx, denoisedDB: denoisedDB, frequencies: frequencies,
-//                                     width: width, height: height,
-//                                     minDB: minDB, dbRange: dbRange, color: UIColor.systemGreen)
-                
-                // After drawing other curves, add HPS
-                drawHPSSpectrum(ctx: ctx, hpsSpectrum: hpsSpectrum, frequencies: frequencies,
-                                width: width, height: height, minDB: minDB, dbRange: dbRange)
-                
-                // Draw fundamental frequency indicator
-                drawFundamental(ctx: ctx, fundamental: currentHPSFundamental,
-                                width: width, height: height)
+                // Draw HPS fundamental marker
+                if fundamental > Float(store.renderMinFrequency) &&
+                        fundamental < Float(store.renderMaxFrequency) {
+                        drawFundamentalMarker(ctx: ctx, frequency: fundamental,
+                                              in: drawRect, color: plots[3].color)
+                }
                 
                 ctx.restoreGState()
                 
-                // Draw SNR scale on right side
-                drawSNRScale(ctx: ctx, rect: rect, verticalPadding: verticalPadding,
-                             rightMargin: rightMargin, height: height)
-                
                 // Draw legend
-                drawLegend(ctx: ctx, rect: rect, verticalPadding: verticalPadding)
+                drawLegend(ctx: ctx, at: CGPoint(x: 10, y: 5))
         }
         
-        
-        // Add HPS drawing method:
-        private func drawHPSSpectrum(ctx: CGContext, hpsSpectrum: [Float], frequencies: [Float],
-                                     width: CGFloat, height: CGFloat,
-                                     minDB: Float, dbRange: Float) {
-                guard !hpsSpectrum.isEmpty else { return }
+        private func drawSpectrum(ctx: CGContext, data: [Float], frequencies: [Float],
+                                  in rect: CGRect, color: UIColor, lineWidth: CGFloat) {
+                guard data.count == frequencies.count else { return }
                 
-                ctx.setStrokeColor(UIColor.systemPurple.cgColor)
-                ctx.setLineWidth(0.5)
-                
-                let path = CGMutablePath()
-                var firstPoint = true
-                
-                // Now HPS spectrum is already bin-mapped and aligned with frequencies array
-                for (i, value) in hpsSpectrum.enumerated() {
-                        guard i < frequencies.count else { break }
-                        
-                        let freq = frequencies[i]
-                        
-                        // Skip if outside display range
-                        guard freq >= 20 && freq <= 20000 else { continue }
-                        
-                        // Use log scale for x position
-                        let logMin = log10(20.0)
-                        let logMax = log10(20000.0)
-                        let logFreq = log10(Double(freq))
-                        let normalizedX = CGFloat((logFreq - logMin) / (logMax - logMin))
-                        let x = normalizedX * width
-                        
-                        // Map value to y position
-                        let clampedValue = max(minDB, min(minDB + dbRange, value))
-                        let normalizedValue = (clampedValue - minDB) / dbRange
-                        let y = height * (1 - CGFloat(normalizedValue))
-                        
-                        if firstPoint {
-                                path.move(to: CGPoint(x: x, y: y))
-                                firstPoint = false
-                        } else {
-                                path.addLine(to: CGPoint(x: x, y: y))
-                        }
-                }
-                
-                if !firstPoint {
-                        ctx.addPath(path)
-                        ctx.strokePath()
-                }
-        }
-        
-        // Add fundamental frequency indicator:
-        private func drawFundamental(ctx: CGContext, fundamental: Float,
-                                     width: CGFloat, height: CGFloat) {
-                guard fundamental > 20 && fundamental < 20000 else { return }
-                
-                // Calculate x position for fundamental
-                let logMin = log10(20.0)
-                let logMax = log10(20000.0)
-                let logFreq = log10(Double(fundamental))
-                let normalizedX = CGFloat((logFreq - logMin) / (logMax - logMin))
-                let x = normalizedX * width
-                
-                // Draw vertical line at fundamental
-                ctx.setStrokeColor(UIColor.systemPurple.cgColor)
-                ctx.setLineWidth(0.3)
-                ctx.move(to: CGPoint(x: x, y: 0))
-                ctx.addLine(to: CGPoint(x: x, y: height))
-                ctx.strokePath()
-                
-                // Draw label
-                let attributes: [NSAttributedString.Key: Any] = [
-                        .font: UIFont.boldSystemFont(ofSize: 11),
-                        .foregroundColor: UIColor.systemPurple
-                ]
-                let text = String(format: "F₀: %.0f Hz", fundamental)
-                let textSize = text.size(withAttributes: attributes)
-                text.draw(at: CGPoint(x: x + 5, y: 5), withAttributes: attributes)
-        }
-        private func drawSpectrumCurve(ctx: CGContext,
-                                       data: [Float],
-                                       frequencies: [Float],
-                                       width: CGFloat, height: CGFloat,
-                                       minDB: Float, dbRange: Float,
-                                       color: UIColor) {
                 ctx.setStrokeColor(color.cgColor)
-                ctx.setLineWidth(0.8)
+                ctx.setLineWidth(lineWidth)
                 
                 let path = CGMutablePath()
+                var started = false
                 
                 for (i, value) in data.enumerated() {
-                        let x = CGFloat(i) * width / CGFloat(data.count - 1)
-                        let clampedValue = max(minDB, min(minDB + dbRange, value))
-                        let normalizedValue = (clampedValue - minDB) / dbRange
-                        let y = height * (1 - CGFloat(normalizedValue))
+                        let freq = frequencies[i]
+                        guard freq >= Float(store.renderMinFrequency),
+                                freq <= Float(store.renderMaxFrequency) else { continue }
                         
-                        if i == 0 {
-                                path.move(to: CGPoint(x: x, y: y))
+                        let x: CGFloat
+                        if store.renderWithLogFrequencyScale {
+                                let logMin = log10(store.renderMinFrequency)
+                                let logMax = log10(store.renderMaxFrequency)
+                                let logFreq = log10(Double(freq))
+                                x = CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
                         } else {
+                                x = CGFloat(i) * rect.width / CGFloat(data.count - 1)
+                        }
+                        
+                        let normalizedValue = (value - minDB) / (maxDB - minDB)
+                        let y = rect.height * (1 - CGFloat(normalizedValue))
+                        
+                        if started {
                                 path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                                path.move(to: CGPoint(x: x, y: y))
+                                started = true
                         }
                 }
                 
@@ -352,239 +229,92 @@ final class StudyGraphView: UIView {
                 ctx.strokePath()
         }
         
-        
-        private func drawLegend(ctx: CGContext, rect: CGRect, verticalPadding: CGFloat) {
-                let attributes: [NSAttributedString.Key: Any] = [
-                        .font: UIFont.systemFont(ofSize: 10),
-                        .foregroundColor: UIColor.white
-                ]
+        private func drawFundamentalMarker(ctx: CGContext, frequency: Float,
+                                           in rect: CGRect, color: UIColor) {
+                let logMin = log10(store.renderMinFrequency)
+                let logMax = log10(store.renderMaxFrequency)
+                let logFreq = log10(Double(frequency))
+                let x = CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
                 
-                let legendItems = [
-                        ("Original", UIColor.systemBlue.withAlphaComponent(0.5)),
-                        ("Noise Floor", UIColor.systemRed),
-                        ("Denoised", UIColor.systemGreen),
-                        ("HPS", UIColor.systemPurple)
-                ]
-                
-                
-                var x: CGFloat = 10  // Small left margin
-                let y: CGFloat = 5
-                
-                for (text, color) in legendItems {
-                        // Draw color indicator
-                        ctx.setFillColor(color.cgColor)
-                        ctx.fill(CGRect(x: x, y: y + 2, width: 15, height: 2))
-                        
-                        x += 20
-                        
-                        // Draw text
-                        text.draw(at: CGPoint(x: x, y: y), withAttributes: attributes)
-                        
-                        let textSize = text.size(withAttributes: attributes)
-                        x += textSize.width + 15
-                }
-        }
-        
-        private func drawGrid(ctx: CGContext, rect: CGRect, verticalPadding: CGFloat, minDB: Float, maxDB: Float) {
-                ctx.saveGState()
-                
-                let width = rect.width
-                let height = rect.height - 2 * verticalPadding
-                
-                ctx.setStrokeColor(UIColor.systemGray.withAlphaComponent(0.2).cgColor)
-                ctx.setLineWidth(0.5)
-                
-                // Draw horizontal lines (dB scale)
-                let dbRange = maxDB - minDB
-                let dbStep: Float = dbRange > 60 ? 20 : 10
-                
-                var db = floor(minDB / dbStep) * dbStep
-                while db <= ceil(maxDB / dbStep) * dbStep {
-                        if db >= minDB && db <= maxDB {
-                                let y = verticalPadding + height * CGFloat(1 - (db - minDB) / dbRange)
-                                ctx.move(to: CGPoint(x: 0, y: y))
-                                ctx.addLine(to: CGPoint(x: rect.width, y: y))
-                                
-                                // Draw label
-                                let attributes: [NSAttributedString.Key: Any] = [
-                                        .font: UIFont.systemFont(ofSize: 9),
-                                        .foregroundColor: UIColor.systemGray
-                                ]
-                                "\(Int(db)) dB".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
-                        }
-                        db += dbStep
-                }
-                
-                // Draw vertical lines (frequency scale) - log spaced
-                let freqLines: [Double] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-                let logMin = log10(20.0)
-                let logMax = log10(20000.0)
-                
-                for freq in freqLines {
-                        let logFreq = log10(freq)
-                        let normalizedX = CGFloat((logFreq - logMin) / (logMax - logMin))
-                        let x = normalizedX * width
-                        
-                        ctx.move(to: CGPoint(x: x, y: verticalPadding))
-                        ctx.addLine(to: CGPoint(x: x, y: rect.height - verticalPadding))
-                        
-                        // Draw label
-                        let attributes: [NSAttributedString.Key: Any] = [
-                                .font: UIFont.systemFont(ofSize: 9),
-                                .foregroundColor: UIColor.systemGray
-                        ]
-                        let label = freq >= 1000 ? "\(Int(freq/1000))k" : "\(Int(freq))"
-                        let textSize = label.size(withAttributes: attributes)
-                        label.draw(at: CGPoint(x: x - textSize.width/2, y: rect.height - verticalPadding + 2), withAttributes: attributes)
-                }
-                
-                ctx.strokePath()
-                ctx.restoreGState()
-        }
-        
-
-        
-        // Add this new method to draw SNR scale:
-        private func drawSNRScale(ctx: CGContext, rect: CGRect, verticalPadding: CGFloat,
-                                  rightMargin: CGFloat, height: CGFloat) {
-                ctx.saveGState()
-                
-                let x = rect.width - rightMargin + 10
-                let attributes: [NSAttributedString.Key: Any] = [
-                        .font: UIFont.systemFont(ofSize: 9),
-                        .foregroundColor: UIColor.systemGreen
-                ]
-                
-                // Draw title
-                let title = "SNR (dB)"
-                let titleSize = title.size(withAttributes: attributes)
-                title.draw(at: CGPoint(x: x + 5, y: verticalPadding - 20), withAttributes: attributes)
-                
-                // Draw scale markers
-                let snrValues: [Float] = [0, 20, 40, 60, 80]
-                for snr in snrValues {
-                        // Map SNR to denoised spectrum display position
-                        let normalizedSNR = snr / 80.0 // Assuming max SNR display of 80 dB
-                        let y = verticalPadding + height * CGFloat(1 - normalizedSNR)
-                        
-                        // Draw tick
-                        ctx.setStrokeColor(UIColor.systemGreen.withAlphaComponent(0.5).cgColor)
-                        ctx.setLineWidth(0.5)
-                        ctx.move(to: CGPoint(x: x, y: y))
-                        ctx.addLine(to: CGPoint(x: x + 5, y: y))
-                        ctx.strokePath()
-                        
-                        // Draw label
-                        "\(Int(snr))".draw(at: CGPoint(x: x + 8, y: y - 5), withAttributes: attributes)
-                }
-                
-                ctx.restoreGState()
-        }
-        
-        // Update drawDenoisedSpectrum to handle the new scale:
-        private func drawDenoisedSpectrum(ctx: CGContext,
-                                          denoisedDB: [Float],
-                                          frequencies: [Float],
-                                          width: CGFloat, height: CGFloat,
-                                          minDB: Float, dbRange: Float,
-                                          color: UIColor) {
+                // Vertical line
                 ctx.setStrokeColor(color.cgColor)
-                ctx.setLineWidth(0.8)
-                ctx.setFillColor(color.withAlphaComponent(0.2).cgColor)
+                ctx.setLineWidth(0.3)
+                ctx.move(to: CGPoint(x: x, y: 0))
+                ctx.addLine(to: CGPoint(x: x, y: rect.height))
+                ctx.strokePath()
                 
-                let path = CGMutablePath()
-                let fillPath = CGMutablePath()
-                var started = false
-                
-                for (i, snr) in denoisedDB.enumerated() {
-                        // Only draw where signal is above noise floor
-                        if snr > 0 {
-                                let x = CGFloat(i) * width / CGFloat(denoisedDB.count - 1)
-                                
-                                // Map SNR to display height (0-80 dB range)
-                                let normalizedSNR = min(snr / 80.0, 1.0)
-                                let y = height * (1 - CGFloat(normalizedSNR))
-                                
-                                if !started {
-                                        path.move(to: CGPoint(x: x, y: y))
-                                        fillPath.move(to: CGPoint(x: x, y: height))
-                                        fillPath.addLine(to: CGPoint(x: x, y: y))
-                                        started = true
-                                } else {
-                                        path.addLine(to: CGPoint(x: x, y: y))
-                                        fillPath.addLine(to: CGPoint(x: x, y: y))
-                                }
-                        }
-                }
-                
-                if started {
-                        fillPath.addLine(to: CGPoint(x: width, y: height))
-                        fillPath.closeSubpath()
-                        
-                        ctx.addPath(fillPath)
-                        ctx.fillPath()
-                        
-                        ctx.addPath(path)
-                        ctx.strokePath()
-                }
+                // Label
+                let attributes: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.boldSystemFont(ofSize: 11),
+                        .foregroundColor: color
+                ]
+                String(format: "F₀: %.0f Hz", frequency)
+                        .draw(at: CGPoint(x: x + 5, y: 5), withAttributes: attributes)
         }
         
-        // Update drawGrid to handle rightMargin:
-        private func drawGrid(ctx: CGContext, rect: CGRect, verticalPadding: CGFloat,
-                              rightMargin: CGFloat, minDB: Float, maxDB: Float) {
-                ctx.saveGState()
-                
-                let width = rect.width - rightMargin
-                let height = rect.height - 2 * verticalPadding
-                
+        private func drawGrid(ctx: CGContext, in rect: CGRect) {
                 ctx.setStrokeColor(UIColor.systemGray.withAlphaComponent(0.2).cgColor)
                 ctx.setLineWidth(0.5)
                 
-                // Draw horizontal lines (dB scale)
-                let dbRange = maxDB - minDB
-                let dbStep: Float = 20
+                let height = rect.height - 2 * padding
                 
-                var db = minDB
-                while db <= maxDB {
-                        let y = verticalPadding + height * CGFloat(1 - (db - minDB) / dbRange)
+                // dB lines
+                let dbStep: Float = 20
+                var db = ceil(minDB / dbStep) * dbStep
+                while db <= floor(maxDB / dbStep) * dbStep {
+                        let y = padding + height * CGFloat(1 - (db - minDB) / (maxDB - minDB))
                         ctx.move(to: CGPoint(x: 0, y: y))
-                        ctx.addLine(to: CGPoint(x: width, y: y))
+                        ctx.addLine(to: CGPoint(x: rect.width, y: y))
                         
-                        // Draw label
                         let attributes: [NSAttributedString.Key: Any] = [
                                 .font: UIFont.systemFont(ofSize: 9),
                                 .foregroundColor: UIColor.systemGray
                         ]
                         "\(Int(db)) dB".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
-                        
                         db += dbStep
                 }
                 
-                // Draw vertical lines (frequency scale) - log spaced
+                // Frequency lines
                 let freqLines: [Double] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-                let logMin = log10(20.0)
-                let logMax = log10(20000.0)
+                let logMin = log10(store.renderMinFrequency)
+                let logMax = log10(store.renderMaxFrequency)
                 
                 for freq in freqLines {
-                        let logFreq = log10(freq)
-                        let normalizedX = CGFloat((logFreq - logMin) / (logMax - logMin))
-                        let x = normalizedX * width
+                        guard freq >= store.renderMinFrequency,
+                                freq <= store.renderMaxFrequency else { continue }
                         
-                        ctx.move(to: CGPoint(x: x, y: verticalPadding))
-                        ctx.addLine(to: CGPoint(x: x, y: rect.height - verticalPadding))
+                        let x = CGFloat((log10(freq) - logMin) / (logMax - logMin)) * (rect.width - padding)
+                        ctx.move(to: CGPoint(x: x, y: padding))
+                        ctx.addLine(to: CGPoint(x: x, y: rect.height - padding))
                         
-                        // Draw label
+                        let label = freq >= 1000 ? "\(Int(freq/1000))k" : "\(Int(freq))"
                         let attributes: [NSAttributedString.Key: Any] = [
                                 .font: UIFont.systemFont(ofSize: 9),
                                 .foregroundColor: UIColor.systemGray
                         ]
-                        let label = freq >= 1000 ? "\(Int(freq/1000))k" : "\(Int(freq))"
-                        let textSize = label.size(withAttributes: attributes)
-                        label.draw(at: CGPoint(x: x - textSize.width/2, y: rect.height - verticalPadding + 2),
+                        label.draw(at: CGPoint(x: x - 10, y: rect.height - padding + 2),
                                    withAttributes: attributes)
                 }
                 
                 ctx.strokePath()
-                ctx.restoreGState()
+        }
+        
+        private func drawLegend(ctx: CGContext, at origin: CGPoint) {
+                let attributes: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.systemFont(ofSize: 10),
+                        .foregroundColor: UIColor.white
+                ]
+                
+                var x = origin.x
+                for plot in plots {
+                        // Color bar
+                        ctx.setFillColor(plot.color.cgColor)
+                        ctx.fill(CGRect(x: x, y: origin.y + 2, width: 15, height: 2))
+                        
+                        // Label
+                        x += 20
+                        plot.name.draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
+                        x += plot.name.size(withAttributes: attributes).width + 15
+                }
         }
 }

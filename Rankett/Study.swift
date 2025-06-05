@@ -375,7 +375,6 @@ final class Study: ObservableObject {
                                 output: currentNoiseFloor,
                                 count: count,
                                 quantile: store.noiseQuantile,
-                                smoothingSigma: store.noiseSmoothingSigma
                         )
                 }
                 
@@ -388,11 +387,10 @@ final class Study: ObservableObject {
         private func fitNoiseFloorQuantile(magnitudesDB: UnsafeMutablePointer<Float>,
                                            output: UnsafeMutablePointer<Float>,
                                            count: Int,
-                                           quantile: Float,
-                                           smoothingSigma: Float) {
-                let maxIterations = 10
-                let convergenceThreshold: Float = 1e-4
-                let bandwidthSemitones: Float = 5.0
+                                           quantile: Float) {
+                let maxIterations = store.noiseFloorMaxIterations
+                let convergenceThreshold: Float = store.noiseFloorConvergenceThreshold
+                let bandwidthSemitones: Float = store.noiseFloorBandwidthSemitones
                 
                 // Copy previous noise floor as starting point
                 memcpy(tempNoiseFloor, previousNoiseFloor, count * MemoryLayout<Float>.size)
@@ -409,7 +407,7 @@ final class Study: ObservableObject {
                                 output: tempNoiseFloor,
                                 count: count,
                                 quantile: quantile,
-                                lambda: smoothingSigma,
+                                lambda: 10, // TODO: is this redunant?
                                 bandwidthSemitones: bandwidthSemitones
                         )
                         

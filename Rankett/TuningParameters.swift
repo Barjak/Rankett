@@ -55,9 +55,6 @@ struct Instrument: Identifiable, Equatable {
 // MARK: – TuningParameterStore (now contains everything from AnalyzerConfig + your tuning params)
 
 class TuningParameterStore: ObservableObject {
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 1) Existing tuning‐related properties (your “concertPitch”, etc.)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
         @Published var concertPitch: Double = 440.0
         @Published var targetPitch: Double = 440.0
         @Published var targetPartial: Int = 1
@@ -93,23 +90,18 @@ class TuningParameterStore: ObservableObject {
         var beatFrequency: Double {
                 abs(actualPitch - targetPitch)
         }
-        
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 2) “Audio” settings (formerly AnalyzerConfig.Audio)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
         
         // sampleRate is fixed at 44 100 Hz (immutable)
         let audioSampleRate: Double = 44_100
         // Nyquist is derived automatically
         var nyquistFrequency: Double { audioSampleRate * 0.5 }
         
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 3) “FFT” settings (formerly AnalyzerConfig.FFT)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
         
         // fftSize is a constant 8192 (immutable)
         let fftSize: Int = 8192
-        let hopSize: Int = 5121
+        let hopSize: Int = 512
 
         
         // outputBinCount was 512 (we keep it @Published so it’s adjustable if you want):
@@ -123,9 +115,6 @@ class TuningParameterStore: ObservableObject {
                 fftSize * 3
         }
         
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 4) “Rendering” settings (formerly AnalyzerConfig.Rendering)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
         
         // targetFPS is fixed at 60 (unpublished)
         let renderingTargetFPS: Double = 60
@@ -134,32 +123,23 @@ class TuningParameterStore: ObservableObject {
         }
         
         // Animation smoothing, log‐scale flag, min/max frequency are constants
+        // TODO: make these mutable with a slider in the UI
         let animationSmoothingFactor: Float = 0.7
         let renderWithLogFrequencyScale: Bool = true
         let renderMinFrequency: Double = 20
         let renderMaxFrequency: Double = 20_000
         
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 5) “PeakDetection” settings (formerly AnalyzerConfig.PeakDetection)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+        let noiseFloorMaxIterations = 10
+        let noiseFloorConvergenceThreshold: Float = 1e-4
+        let noiseFloorBandwidthSemitones: Float = 5.0
         
-        @Published var peakMinProminence: Float = 6.0
-        @Published var peakMinDistance: Int = 5
-        @Published var peakMinHeight: Float = -60.0
-        @Published var peakProminenceWindow: Int = 50
-        
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 6) “NoiseFloor” settings (formerly AnalyzerConfig.NoiseFloor)
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
         
         @Published var noiseMethod: NoiseFloorMethod = .quantileRegression
-        @Published var noiseThresholdOffset: Float = 5.0
+        @Published var noiseThresholdOffset: Float = 10.0
         @Published var noiseQuantile: Float = 0.02
-        @Published var noiseSmoothingSigma: Float = 10
         
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
-        // 7) Convenience “default” initializer
-        //––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+
         
         static let `default` = TuningParameterStore()
 }

@@ -1,6 +1,22 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Zoom State
+// MARK: - Zoom State
+enum ZoomState: Int, CaseIterable {
+        case fullSpectrum = 0
+        case threeOctaves = 1
+        case targetFundamental = 2
+        
+        var iconName: String {
+                switch self {
+                case .fullSpectrum: return "magnifyingglass"
+                case .threeOctaves: return "magnifyingglass.circle"
+                case .targetFundamental: return "magnifyingglass.circle.fill"
+                }
+        }
+}
+
 // MARK: - Simple Plot Data Structure
 struct Plot {
         var current: [Float] = []
@@ -22,9 +38,128 @@ struct Plot {
 }
 
 // MARK: - Main View
-struct StudyView: UIViewRepresentable {
+struct StudyView: View {
         @ObservedObject var study: Study
         @ObservedObject var store: TuningParameterStore
+        @State private var showingSettings = false
+        @State private var zoomState: ZoomState = .fullSpectrum
+        
+        var body: some View {
+                ZStack(alignment: .topTrailing) {
+                        StudyGraphViewRepresentable(
+                                study: study,
+                                store: store,
+                                zoomState: $zoomState
+                        )
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                                showingSettings = true
+                        }
+                        
+                        // Zoom button
+                        Button(action: cycleZoom) {
+                                Image(systemName: zoomState.iconName)
+                                        .font(.title2)
+                                        .foregroundColor(.white)
+                                        .padding(8)
+                                        .background(Color.black.opacity(0.6))
+                                        .clipShape(Circle())
+                        }
+                        .padding(.trailing, 12)
+                        .padding(.top, 12)
+                }
+                .sheet(isPresented: $showingSettings) {
+                        SettingsModalView(store: store)
+                }
+        }
+        
+        private func cycleZoom() {
+                let currentIndex = zoomState.rawValue
+                let nextIndex = (currentIndex + 1) % ZoomState.allCases.count
+                zoomState = ZoomState.allCases[nextIndex]
+        }
+}
+
+// MARK: - Settings Modal
+struct SettingsModalView: View {
+        @ObservedObject var store: TuningParameterStore
+        @Environment(\.dismiss) private var dismiss
+        
+        var body: some View {
+                NavigationView {
+                        Form {
+                                Section("Noise Floor Parameters") {
+                                        VStack(alignment: .leading) {
+                                                Text("Threshold Offset: \(store.noiseThresholdOffset, specifier: "%.1f") dB")
+                                                        .font(.caption)
+                                                Slider(value: $store.noiseThresholdOffset, in: -5...20)
+                                        }
+                                        
+                                        VStack(alignment: .leading) {
+                                                Text("Quantile: \(store.noiseQuantile, specifier: "%.3f")")
+                                                        .font(.caption)
+                                                LogarithmicSlider(
+                                                        value: $store.noiseQuantile,
+                                                        range: 0.01...20.0
+                                                )
+                                        }
+                                        
+                                        VStack(alignment: .leading) {
+                                                Text("Bandwidth: \(store.noiseFloorBandwidthSemitones, specifier: "%.1f") semitones")
+                                                        .font(.caption)
+                                                Slider(value: $store.noiseFloorBandwidthSemitones, in: 1.0...12.0)
+                                        }
+                                }
+                        }
+                        .navigationTitle("Study Settings")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                        Button("Done") { dismiss() }
+                                }
+                        }
+                }
+        }
+}
+
+// MARK: - Logarithmic Slider
+struct LogarithmicSlider: View {
+        @Binding var value: Float
+        let range: ClosedRange<Float>
+        
+        @State private var sliderValue: Float = 0
+        
+        var body: some View {
+                Slider(value: $sliderValue, in: 0...1) { _ in
+                        value = exponentialValue(from: sliderValue)
+                }
+                .onAppear {
+                        sliderValue = logarithmicValue(from: value)
+                }
+                .onChange(of: sliderValue) { newValue in
+                        value = exponentialValue(from: newValue)
+                }
+        }
+        
+        private func logarithmicValue(from value: Float) -> Float {
+                let logMin = log10(range.lowerBound)
+                let logMax = log10(range.upperBound)
+                let logValue = log10(value)
+                return (logValue - logMin) / (logMax - logMin)
+        }
+        
+        private func exponentialValue(from sliderValue: Float) -> Float {
+                let logMin = log10(range.lowerBound)
+                let logMax = log10(range.upperBound)
+                let logValue = logMin + sliderValue * (logMax - logMin)
+                return pow(10, logValue)
+        }
+}
+
+// MARK: - UIViewRepresentable Wrapper
+struct StudyGraphViewRepresentable: UIViewRepresentable {
+        @ObservedObject var study: Study
+        @ObservedObject var store: TuningParameterStore
+        @Binding var zoomState: ZoomState
         
         func makeUIView(context: Context) -> StudyGraphView {
                 let view = StudyGraphView(store: store)
@@ -35,6 +170,7 @@ struct StudyView: UIViewRepresentable {
         }
         
         func updateUIView(_ uiView: StudyGraphView, context: Context) {
+                uiView.zoomState = zoomState
                 uiView.updateTargets(
                         originalSpectrum: study.targetOriginalSpectrum,
                         noiseFloor: study.targetNoiseFloor,
@@ -47,9 +183,11 @@ struct StudyView: UIViewRepresentable {
         }
 }
 
+// MARK: - UIKit Graph View
 final class StudyGraphView: UIView {
         private let store: TuningParameterStore
         private var displayTimer: Timer?
+        var zoomState: ZoomState = .fullSpectrum
         
         // Pre-allocated plots
         private var plots: [Plot] = [
@@ -59,6 +197,16 @@ final class StudyGraphView: UIView {
                 Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
         ]
         
+        // Advanced model plots (commented out for now)
+        /*
+         private var advancedPlots: [Plot] = [
+         Plot(color: .systemOrange, name: "ZoomFFT", lineWidth: 0.8),
+         Plot(color: .systemPink, name: "MUSIC", lineWidth: 0.8),
+         Plot(color: .systemYellow, name: "ESPRIT", lineWidth: 0.8),
+         Plot(color: .systemCyan, name: "SAMV", lineWidth: 0.8)
+         ]
+         */
+        
         // Special HPS data
         private var hpsFundamental: Float = 0
         private var targetHPSFundamental: Float = 0
@@ -66,6 +214,10 @@ final class StudyGraphView: UIView {
         private var frequencies: [Float] = []
         private var binMapper: BinMapper?
         private let dataLock = NSLock()
+        
+        // Current view frequency range (calculated once per draw)
+        private var currentMinFreq: Float = 20
+        private var currentMaxFreq: Float = 20_000
         
         // Drawing constants from store
         private var padding: CGFloat { 40 }
@@ -93,6 +245,27 @@ final class StudyGraphView: UIView {
                         repeats: true
                 ) { [weak self] _ in
                         self?.updateDisplay()
+                }
+        }
+        
+        private func updateFrequencyRange() {
+                switch zoomState {
+                case .fullSpectrum:
+                        currentMinFreq = Float(store.renderMinFrequency)
+                        currentMaxFreq = Float(store.renderMaxFrequency)
+                        
+                case .threeOctaves:
+                        // Three octaves above target pitch, starting at -1 semitone
+                        let baseFreq = Float(store.targetPitch) * pow(2, -1.0/12.0)
+                        let maxFreq = baseFreq * 8.0 // 3 octaves = 2^3 = 8x
+                        currentMinFreq = baseFreq
+                        currentMaxFreq = min(maxFreq, Float(store.renderMaxFrequency))
+                        
+                case .targetFundamental:
+                        // ±50 cents around target pitch
+                        let centerFreq = Float(store.targetPitch)
+                        currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
+                        currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
         }
         
@@ -156,6 +329,9 @@ final class StudyGraphView: UIView {
                 
                 guard !freq.isEmpty else { return }
                 
+                // Update frequency range once for this draw cycle
+                updateFrequencyRange()
+                
                 // Drawing setup
                 ctx.setFillColor(UIColor.black.cgColor)
                 ctx.fill(rect)
@@ -177,8 +353,7 @@ final class StudyGraphView: UIView {
                 }
                 
                 // Draw HPS fundamental marker
-                if fundamental > Float(store.renderMinFrequency) &&
-                        fundamental < Float(store.renderMaxFrequency) {
+                if fundamental > currentMinFreq && fundamental < currentMaxFreq {
                         drawFundamentalMarker(ctx: ctx, frequency: fundamental,
                                               in: drawRect, color: plots[3].color)
                 }
@@ -187,6 +362,23 @@ final class StudyGraphView: UIView {
                 
                 // Draw legend
                 drawLegend(ctx: ctx, at: CGPoint(x: 10, y: 5))
+                
+                // Draw zoom indicator
+                if zoomState != .fullSpectrum {
+                        drawZoomIndicator(ctx: ctx, at: CGPoint(x: rect.width - 150, y: 5))
+                }
+        }
+        
+        private func mapFrequencyToX(_ freq: Float, in rect: CGRect) -> CGFloat {
+                if store.renderWithLogFrequencyScale {
+                        let logMin = log10(Double(currentMinFreq))
+                        let logMax = log10(Double(currentMaxFreq))
+                        let logFreq = log10(Double(freq))
+                        return CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
+                } else {
+                        let normalized = (freq - currentMinFreq) / (currentMaxFreq - currentMinFreq)
+                        return CGFloat(normalized) * rect.width
+                }
         }
         
         private func drawSpectrum(ctx: CGContext, data: [Float], frequencies: [Float],
@@ -201,19 +393,9 @@ final class StudyGraphView: UIView {
                 
                 for (i, value) in data.enumerated() {
                         let freq = frequencies[i]
-                        guard freq >= Float(store.renderMinFrequency),
-                                freq <= Float(store.renderMaxFrequency) else { continue }
+                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
                         
-                        let x: CGFloat
-                        if store.renderWithLogFrequencyScale {
-                                let logMin = log10(store.renderMinFrequency)
-                                let logMax = log10(store.renderMaxFrequency)
-                                let logFreq = log10(Double(freq))
-                                x = CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
-                        } else {
-                                x = CGFloat(i) * rect.width / CGFloat(data.count - 1)
-                        }
-                        
+                        let x = mapFrequencyToX(freq, in: rect)
                         let normalizedValue = (value - minDB) / (maxDB - minDB)
                         let y = rect.height * (1 - CGFloat(normalizedValue))
                         
@@ -231,10 +413,7 @@ final class StudyGraphView: UIView {
         
         private func drawFundamentalMarker(ctx: CGContext, frequency: Float,
                                            in rect: CGRect, color: UIColor) {
-                let logMin = log10(store.renderMinFrequency)
-                let logMax = log10(store.renderMaxFrequency)
-                let logFreq = log10(Double(frequency))
-                let x = CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
+                let x = mapFrequencyToX(frequency, in: rect)
                 
                 // Vertical line
                 ctx.setStrokeColor(color.cgColor)
@@ -274,20 +453,19 @@ final class StudyGraphView: UIView {
                         db += dbStep
                 }
                 
-                // Frequency lines
-                let freqLines: [Double] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-                let logMin = log10(store.renderMinFrequency)
-                let logMax = log10(store.renderMaxFrequency)
+                // Frequency lines - automatically calculated
+                let freqLines = calculateFrequencyGridLines()
                 
-                for freq in freqLines {
-                        guard freq >= store.renderMinFrequency,
-                                freq <= store.renderMaxFrequency else { continue }
+                for (freq, label) in freqLines {
+                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
                         
-                        let x = CGFloat((log10(freq) - logMin) / (logMax - logMin)) * (rect.width - padding)
+                        let x = mapFrequencyToX(freq, in: CGRect(x: 0, y: 0,
+                                                                 width: rect.width - padding,
+                                                                 height: rect.height))
+                        
                         ctx.move(to: CGPoint(x: x, y: padding))
                         ctx.addLine(to: CGPoint(x: x, y: rect.height - padding))
                         
-                        let label = freq >= 1000 ? "\(Int(freq/1000))k" : "\(Int(freq))"
                         let attributes: [NSAttributedString.Key: Any] = [
                                 .font: UIFont.systemFont(ofSize: 9),
                                 .foregroundColor: UIColor.systemGray
@@ -299,6 +477,76 @@ final class StudyGraphView: UIView {
                 ctx.strokePath()
         }
         
+        private func calculateFrequencyGridLines() -> [(freq: Float, label: String)] {
+                let range = currentMaxFreq - currentMinFreq
+                let logRange = log10(Double(currentMaxFreq / currentMinFreq))
+                
+                var lines: [(Float, String)] = []
+                
+                if logRange < 0.5 {
+                        // Very narrow range - use linear spacing
+                        let step = calculateNiceStep(range, targetCount: 5)
+                        var freq = ceil(currentMinFreq / step) * step
+                        
+                        while freq <= currentMaxFreq {
+                                if zoomState == .targetFundamental {
+                                        // Show as cents relative to target
+                                        let target = Float(store.targetPitch)
+                                        let cents = 1200 * log2(freq / target)
+                                        lines.append((freq, String(format: "%+.0fc", cents)))
+                                } else {
+                                        lines.append((freq, formatFrequency(freq)))
+                                }
+                                freq += step
+                        }
+                } else {
+                        // Wide range - use logarithmic spacing
+                        let decades = [1, 2, 5]
+                        var magnitude = pow(10, floor(log10(Double(currentMinFreq))))
+                        
+                        while magnitude <= Double(currentMaxFreq) * 10 {
+                                for factor in decades {
+                                        let freq = Float(magnitude * Double(factor))
+                                        if freq >= currentMinFreq && freq <= currentMaxFreq {
+                                                lines.append((freq, formatFrequency(freq)))
+                                        }
+                                }
+                                magnitude *= 10
+                        }
+                }
+                
+                return lines
+        }
+        
+        private func calculateNiceStep(_ range: Float, targetCount: Int) -> Float {
+                let roughStep = range / Float(targetCount)
+                let magnitude = pow(10, floor(log10(Double(roughStep))))
+                let normalized = Double(roughStep) / magnitude
+                
+                let niceValue: Double
+                if normalized <= 1 {
+                        niceValue = 1
+                } else if normalized <= 2 {
+                        niceValue = 2
+                } else if normalized <= 5 {
+                        niceValue = 5
+                } else {
+                        niceValue = 10
+                }
+                
+                return Float(niceValue * magnitude)
+        }
+        
+        private func formatFrequency(_ freq: Float) -> String {
+                if freq >= 1000 {
+                        return String(format: "%.3gk", freq / 1000)
+                } else if freq >= 100 {
+                        return String(format: "%.0f", freq)
+                } else {
+                        return String(format: "%.1f", freq)
+                }
+        }
+        
         private func drawLegend(ctx: CGContext, at origin: CGPoint) {
                 let attributes: [NSAttributedString.Key: Any] = [
                         .font: UIFont.systemFont(ofSize: 10),
@@ -306,7 +554,9 @@ final class StudyGraphView: UIView {
                 ]
                 
                 var x = origin.x
-                for plot in plots {
+                let plotsToShow = zoomState == .targetFundamental ? plots : plots
+                
+                for plot in plotsToShow {
                         // Color bar
                         ctx.setFillColor(plot.color.cgColor)
                         ctx.fill(CGRect(x: x, y: origin.y + 2, width: 15, height: 2))
@@ -316,5 +566,24 @@ final class StudyGraphView: UIView {
                         plot.name.draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
                         x += plot.name.size(withAttributes: attributes).width + 15
                 }
+        }
+        
+        private func drawZoomIndicator(ctx: CGContext, at origin: CGPoint) {
+                let attributes: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.systemFont(ofSize: 10),
+                        .foregroundColor: UIColor.systemOrange
+                ]
+                
+                let text: String
+                switch zoomState {
+                case .fullSpectrum:
+                        text = "Full Spectrum"
+                case .threeOctaves:
+                        text = "3 Octaves"
+                case .targetFundamental:
+                        text = "±50 cents"
+                }
+                
+                text.draw(at: origin, withAttributes: attributes)
         }
 }

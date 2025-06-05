@@ -124,14 +124,14 @@ class TuningParameterStore: ObservableObject {
         
         // Animation smoothing, log‐scale flag, min/max frequency are constants
         // TODO: make these mutable with a slider in the UI
-        let animationSmoothingFactor: Float = 0.7
-        let renderWithLogFrequencyScale: Bool = true
-        let renderMinFrequency: Double = 20
-        let renderMaxFrequency: Double = 20_000
+        @Published var animationSmoothingFactor: Float = 0.7
+        @Published var renderWithLogFrequencyScale: Bool = true
+        @Published var renderMinFrequency: Double = 20
+        @Published var renderMaxFrequency: Double = 20_000
         
         let noiseFloorMaxIterations = 10
         let noiseFloorConvergenceThreshold: Float = 1e-4
-        let noiseFloorBandwidthSemitones: Float = 5.0
+        @Published var noiseFloorBandwidthSemitones: Float = 5.0
         
 
         

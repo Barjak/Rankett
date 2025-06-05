@@ -96,14 +96,6 @@ struct StudyResult {
         let processingTime: TimeInterval
 }
 
-struct Peak {
-        let index: Int
-        let frequency: Float
-        let magnitude: Float
-        let prominence: Float
-        let leftBase: Int
-        let rightBase: Int
-}
 
 // MARK: - Study Analysis Class
 final class Study: ObservableObject {
@@ -148,7 +140,6 @@ final class Study: ObservableObject {
         @Published var targetNoiseFloor: [Float] = []
         @Published var targetDenoisedSpectrum: [Float] = []
         @Published var targetFrequencies: [Float] = []
-        @Published var targetPeaks: [Peak] = []
         @Published var targetHPSSpectrum: [Float] = []
         @Published var targetHPSFundamental: Float = 0
         
@@ -544,99 +535,7 @@ final class Study: ObservableObject {
                 var ceiling = Float.greatestFiniteMagnitude
                 vDSP_vclip(output, 1, &zero, &ceiling, output, 1, vDSP_Length(count))
         }
-        
-        // MARK: - Find Peaks
-        private func findPeaks(in spectrum: UnsafeMutablePointer<Float>,
-                               frequencies: UnsafeMutablePointer<Float>,
-                               count: Int,
-                               store: TuningParameterStore) -> [Peak] {
-                var peaks: [Peak] = []
-                
-                // Find local maxima
-                for i in 1..<(count - 1) {
-                        if spectrum[i] > spectrum[i-1] &&
-                                spectrum[i] > spectrum[i+1] &&
-                                spectrum[i] > store.peakMinHeight {
-                                
-                                // Calculate prominence
-                                let (prominence, leftBase, rightBase) = calculateProminence(
-                                        at: i,
-                                        in: spectrum,
-                                        count: count,
-                                        window: store.peakProminenceWindow
-                                )
-                                
-                                if prominence >= store.peakMinProminence {
-                                        peaks.append(Peak(
-                                                index: i,
-                                                frequency: frequencies[i],
-                                                magnitude: spectrum[i],
-                                                prominence: prominence,
-                                                leftBase: leftBase,
-                                                rightBase: rightBase
-                                        ))
-                                }
-                        }
-                }
-                
-                // Filter by minimum distance
-                peaks = filterByDistance(peaks, minDistance: store.peakMinDistance)
-                
-                return peaks
-        }
-        
-        // MARK: (Calculate Prominence)
-        private func calculateProminence(at peakIndex: Int,
-                                         in spectrum: UnsafeMutablePointer<Float>,
-                                         count: Int,
-                                         window: Int) -> (prominence: Float, leftBase: Int, rightBase: Int) {
-                let peakHeight = spectrum[peakIndex]
-                let start = max(0, peakIndex - window)
-                let end = min(count - 1, peakIndex + window)
-                
-                // Find lowest points on each side
-                var leftMin = peakHeight
-                var leftMinIndex = peakIndex
-                for i in stride(from: peakIndex - 1, through: start, by: -1) {
-                        if spectrum[i] < leftMin {
-                                leftMin = spectrum[i]
-                                leftMinIndex = i
-                        }
-                        if spectrum[i] > peakHeight { break }
-                }
-                
-                var rightMin = peakHeight
-                var rightMinIndex = peakIndex
-                for i in stride(from: peakIndex + 1, through: end, by: 1) {
-                        if spectrum[i] < rightMin {
-                                rightMin = spectrum[i]
-                                rightMinIndex = i
-                        }
-                        if spectrum[i] > peakHeight { break }
-                }
-                
-                let prominence = peakHeight - max(leftMin, rightMin)
-                return (prominence, leftMinIndex, rightMinIndex)
-        }
-        
-        // MARK: (Filter By Distance)
-        private func filterByDistance(_ peaks: [Peak], minDistance: Int) -> [Peak] {
-                guard !peaks.isEmpty else { return [] }
-                
-                // Sort by magnitude (keep highest peaks when too close)
-                let sorted = peaks.sorted { $0.magnitude > $1.magnitude }
-                var kept: [Peak] = []
-                
-                for peak in sorted {
-                        let tooClose = kept.contains { abs($0.index - peak.index) < minDistance }
-                        if !tooClose {
-                                kept.append(peak)
-                        }
-                }
-                
-                return kept.sorted { $0.index < $1.index }
-        }
-        
+
         private func initializeNoiseFloor(firstMagnitudeSpectrum: UnsafeMutablePointer<Float>, count: Int) {
                 // Copy the magnitude spectrum to the noise floor buffers
                 memcpy(currentNoiseFloor, firstMagnitudeSpectrum, count * MemoryLayout<Float>.size)

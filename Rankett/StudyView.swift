@@ -63,14 +63,14 @@ final class StudyGraphView: UIView {
         private var currentNoiseFloor: [Float] = []
         private var currentDenoised: [Float] = []
         private var currentFrequencies: [Float] = []
-        private var currentPeaks: [Peak] = []
+
         private var smoothedPeakPositions: [Float: CGPoint] = [:]
         
         private var targetOriginal: [Float] = []
         private var targetNoiseFloor: [Float] = []
         private var targetDenoised: [Float] = []
         private var targetFrequencies: [Float] = []
-        private var targetPeaks: [Peak] = []
+
         
         private var currentHPSSpectrum: [Float] = []
         private var targetHPSSpectrum: [Float] = []

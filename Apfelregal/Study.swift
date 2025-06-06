@@ -163,7 +163,7 @@ final class FFTProcessor {
         func initializeFrequencies(sampleRate: Float) {
                 let binWidth = sampleRate / Float(fftSize)
                 for i in 0..<halfSize {
-                        frequencyBuffer[i] = Float(i) * binWidth
+                        frequencyBuffer[i] = Float(i) * binWidth // 1024 * (22050 / 2048)
                 }
         }
         
@@ -241,58 +241,59 @@ final class ZoomFFTProcessor {
                             upperHz: Float,
                             sampleRate: Float) -> (spectrum: [Float], frequencies: [Float]) {
                 
-                // Step 1: Modulate signal
+                // Step 1: Modulate signal to shift spectrum down
                 for i in 0..<originalFFTSize {
                         let t = Float(i) / sampleRate
                         let modulation = cos(2.0 * .pi * centerHz * t)
                         modulatedBuffer[i] = audioWindow[i] * modulation
                 }
                 
-                // Step 2: Decimate with simple averaging
-                let filterLength = decimationFactor
-                for i in 0..<(originalFFTSize / decimationFactor) {
+                // Step 2: Apply window BEFORE decimation
+                let window = fftProcessor.windowBuffer
+                for i in 0..<originalFFTSize {
+                        modulatedBuffer[i] *= window[i % fftProcessor.fftSize]
+                }
+                
+                // Step 3: Decimate with proper anti-aliasing filter
+                for i in 0..<fftProcessor.fftSize {
                         var sum: Float = 0
-                        for j in 0..<filterLength {
-                                let idx = i * decimationFactor + j
+                        let startIdx = i * decimationFactor
+                        for j in 0..<decimationFactor {
+                                let idx = startIdx + j
                                 if idx < originalFFTSize {
                                         sum += modulatedBuffer[idx]
                                 }
                         }
-                        if i < fftProcessor.fftSize {
-                                decimatedBuffer[i] = sum / Float(filterLength)
-                        }
+                        decimatedBuffer[i] = sum / Float(decimationFactor)
                 }
                 
-                // Step 3: Perform FFT on decimated signal
-                fftProcessor.performFFT(input: decimatedBuffer)
+                // Step 4: Perform FFT on decimated signal (without window since we already applied it)
+                fftProcessor.performFFT(input: decimatedBuffer, applyWindow: false)
                 fftProcessor.convertMagnitudesToDB()
                 
-                // Step 4: Generate frequency array
+                // Step 5: Calculate actual frequencies
+                // After modulation by centerHz and decimation, the spectrum is shifted
                 let decimatedSampleRate = sampleRate / Float(decimationFactor)
-                fftProcessor.initializeFrequencies(sampleRate: decimatedSampleRate)
+                let binWidth = decimatedSampleRate / Float(fftProcessor.fftSize)
                 
-                // Adjust frequencies to account for modulation
-                for i in 0..<fftProcessor.halfSize {
-                        fftProcessor.frequencyBuffer[i] = centerHz - decimatedSampleRate/2 + fftProcessor.frequencyBuffer[i]
-                }
-                
-                
-                var startIdx = 0
-                var endIdx = fftProcessor.halfSize
+                var frequencies: [Float] = []
+                var spectrum: [Float] = []
                 
                 for i in 0..<fftProcessor.halfSize {
-                        if fftProcessor.frequencyBuffer[i] >= lowerHz && startIdx == 0 {
-                                startIdx = i
-                        }
-                        if fftProcessor.frequencyBuffer[i] > upperHz {
-                                endIdx = i
-                                break
+                        let decimatedFreq = Float(i) * binWidth
+                        
+                        let originalFreq = centerHz - decimatedSampleRate/2 + decimatedFreq
+                        
+                        // Only keep frequencies in our target range
+                        if originalFreq >= lowerHz && originalFreq <= upperHz {
+                                frequencies.append(originalFreq)
+                                spectrum.append(fftProcessor.magnitudeBuffer[i])
                         }
                 }
                 
-                let relevantCount = endIdx - startIdx
-                let spectrum = Array(UnsafeBufferPointer(start: fftProcessor.magnitudeBuffer + startIdx, count: relevantCount))
-                let frequencies = Array(UnsafeBufferPointer(start: fftProcessor.frequencyBuffer + startIdx, count: relevantCount))
+                // Apply gain to compensate for decimation loss
+                let gainDB: Float = 20.0 // Adjust as needed
+                spectrum = spectrum.map { $0 + gainDB }
                 
                 return (spectrum, frequencies)
         }
@@ -589,8 +590,8 @@ struct StudyResult {
         let hpsFundamental: Float
         let timestamp: Date
         let processingTime: TimeInterval
-//        let zoomSpectrum: [Float]
-//        let zoomFreqeuncies: [Float]
+        let zoomSpectrum: [Float]
+        let zoomFreqeuncies: [Float]
 }
 
 // MARK: - Simplified Study Class
@@ -602,7 +603,7 @@ final class Study: ObservableObject {
         
         // FFT processors
         private let mainFFT: FFTProcessor
-//        private let zoomFFT: ZoomFFTProcessor?
+        private let zoomFFT: ZoomFFTProcessor
         private let hpsProcessor: HPSProcessor
         private let noiseFloorEstimator: NoiseFloorEstimator
         
@@ -633,11 +634,11 @@ final class Study: ObservableObject {
                 
                 // Initialize FFT processors
                 self.mainFFT = FFTProcessor(fftSize: fftSize)
-//                self.zoomFFT = ZoomFFTProcessor(
-//                        zoomFFTSize: 2048,
-//                        decimationFactor: 16,
-//                        originalFFTSize: fftSize
-//                )
+                self.zoomFFT = ZoomFFTProcessor(
+                        zoomFFTSize: 2048,
+                        decimationFactor: 2048,
+                        originalFFTSize: fftSize
+                )
                 self.hpsProcessor = HPSProcessor(
                         spectrumSize: halfSize,
                         harmonicProfile: [0.3, 0.3, 0.3]
@@ -697,8 +698,8 @@ final class Study: ObservableObject {
                                         self?.targetFrequencies      = result.frequencies
                                         self?.targetHPSSpectrum      = result.hpsSpectrum
                                         self?.targetHPSFundamental   = result.hpsFundamental
-//                                        self?.zoomSpectrum           = result.zoomSpectrum
-//                                        self?.zoomFrequencies        = result.zoomFreqeuncies
+                                        self?.zoomSpectrum           = result.zoomSpectrum
+                                        self?.zoomFrequencies        = result.zoomFreqeuncies
 
                                 }
                         }
@@ -738,17 +739,17 @@ final class Study: ObservableObject {
                 )
                 
                 // Perform Zoom FFT
-//                let centerHz = Float(store.targetNote.frequency(concertA: store.concertPitch))
-//                let (lowerHz, upperHz) = Note.calculateZoomCenterFrequency(centerFreq: centerHz, totalWindowCents: 100.0)
-//                let (zoomSpec, zoomFreqs) = audioWindow.withUnsafeBufferPointer { audioPtr in
-//                        zoomFFT.performZoomFFT(
-//                                audioWindow: audioPtr.baseAddress!,
-//                                lowerHz: lowerHz,
-//                                centerHz: centerHz,
-//                                upperHz: upperHz,
-//                                sampleRate: Float(store.audioSampleRate)
-//                        )
-//                }
+                let centerHz = store.targetFrequency()
+                let (lowerHz, upperHz) = Note.calculateZoomCenterFrequency(centerFreq: centerHz, totalWindowCents: 100.0)
+                let (zoomSpec, zoomFreqs) = audioWindow.withUnsafeBufferPointer { audioPtr in
+                        zoomFFT.performZoomFFT(
+                                audioWindow: audioPtr.baseAddress!,
+                                lowerHz: lowerHz,
+                                centerHz: centerHz,
+                                upperHz: upperHz,
+                                sampleRate: Float(store.audioSampleRate)
+                        )
+                }
                 
                 // Package and return results
                 return StudyResult(
@@ -760,8 +761,8 @@ final class Study: ObservableObject {
                         hpsFundamental: hpsFundamental,
                         timestamp: Date(),
                         processingTime: CFAbsoluteTimeGetCurrent() - overallStart,
-//                        zoomSpectrum: zoomSpec,
-//                        zoomFreqeuncies: zoomFreqs,
+                        zoomSpectrum: zoomSpec,
+                        zoomFreqeuncies: zoomFreqs,
                 )
         }
 

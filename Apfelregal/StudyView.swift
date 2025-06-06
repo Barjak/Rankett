@@ -177,7 +177,9 @@ struct StudyGraphViewRepresentable: UIViewRepresentable {
                         denoisedSpectrum: study.targetDenoisedSpectrum,
                         frequencies: study.targetFrequencies,
                         hpsSpectrum: study.targetHPSSpectrum,
-                        hpsFundamental: study.targetHPSFundamental
+                        hpsFundamental: study.targetHPSFundamental,
+                        zoomSpectrum: study.zoomSpectrum,
+                        zoomFrequencies: study.zoomFrequencies
                 )
                 uiView.setNeedsDisplay()
         }
@@ -195,7 +197,17 @@ final class StudyGraphView: UIView {
                 Plot(color: .systemRed, name: "Noise Floor", lineWidth: 0.8),
                 Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
                 Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
+                
+                
         ]
+        
+        private var zoomPlot = Plot(
+                color: .systemOrange,
+                name: "ZoomFFT",
+                lineWidth: 1.2
+        )
+        private var zoomFrequencies: [Float] = []
+
         
         // Advanced model plots (commented out for now)
         /*
@@ -263,7 +275,7 @@ final class StudyGraphView: UIView {
                         
                 case .targetFundamental:
                         // ±50 cents around target pitch
-                        let centerFreq = Float(store.targetNote.frequency(concertA: store.concertPitch))
+                        let centerFreq = store.targetFrequency()
                         currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
                         currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
@@ -271,7 +283,8 @@ final class StudyGraphView: UIView {
         
         func updateTargets(originalSpectrum: [Float], noiseFloor: [Float],
                            denoisedSpectrum: [Float], frequencies: [Float],
-                           hpsSpectrum: [Float], hpsFundamental: Float) {
+                           hpsSpectrum: [Float], hpsFundamental: Float,
+                           zoomSpectrum: [Float], zoomFrequencies: [Float]) {
                 dataLock.lock()
                 defer { dataLock.unlock() }
                 
@@ -290,6 +303,10 @@ final class StudyGraphView: UIView {
                 plots[2].target = mapper.mapSpectrum(denoisedSpectrum)
                 plots[3].target = mapper.mapHPSSpectrum(hpsSpectrum)
                 
+                // Handle ZoomFFT data separately (don't map it, use as-is)
+                zoomPlot.target = zoomSpectrum
+                self.zoomFrequencies = zoomFrequencies
+                
                 self.frequencies = mapper.binFrequencies
                 self.targetHPSFundamental = hpsFundamental
                 
@@ -298,6 +315,11 @@ final class StudyGraphView: UIView {
                         if plots[i].current.isEmpty {
                                 plots[i].current = plots[i].target
                         }
+                }
+                
+                // Initialize zoom plot current if empty
+                if zoomPlot.current.isEmpty {
+                        zoomPlot.current = zoomPlot.target
                 }
         }
         
@@ -310,6 +332,9 @@ final class StudyGraphView: UIView {
                         plots[i].smooth(factor)
                 }
                 
+                // Smooth zoom plot
+                zoomPlot.smooth(factor)
+                
                 // Smooth HPS fundamental
                 let beta = 1.0 - factor
                 hpsFundamental = hpsFundamental * factor + targetHPSFundamental * beta
@@ -318,6 +343,8 @@ final class StudyGraphView: UIView {
                 setNeedsDisplay()
         }
         
+
+        
         override func draw(_ rect: CGRect) {
                 guard let ctx = UIGraphicsGetCurrentContext() else { return }
                 
@@ -325,10 +352,20 @@ final class StudyGraphView: UIView {
                 let plotData = plots.map { ($0.current, $0.color, $0.lineWidth) }
                 let freq = frequencies
                 let fundamental = hpsFundamental
+                var zoomData = zoomPlot.current
+                let zoomFreq = zoomFrequencies
                 dataLock.unlock()
                 
-                guard !freq.isEmpty else { return }
+                if !zoomFreq.isEmpty {
+                        print("ZoomFFT frequencies: min=\(zoomFreq.first ?? 0), max=\(zoomFreq.last ?? 0)")
+                        print("View expects: min=\(currentMinFreq), max=\(currentMaxFreq)")
+                        print("First few zoom freqs: \(Array(zoomFreq.prefix(5)))")
+                }
                 
+                guard !freq.isEmpty else { return }
+                if !zoomData.isEmpty {
+                        zoomData = zoomData.map { $0 + 150 }
+                }
                 // Update frequency range once for this draw cycle
                 updateFrequencyRange()
                 
@@ -347,9 +384,23 @@ final class StudyGraphView: UIView {
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: padding)
                 
-                for (data, color, lineWidth) in plotData {
-                        drawSpectrum(ctx: ctx, data: data, frequencies: freq,
-                                     in: drawRect, color: color, lineWidth: lineWidth)
+                // Draw regular plots based on zoom state
+                if zoomState == .targetFundamental {
+                        // In target fundamental mode, show only denoised and ZoomFFT
+                        drawSpectrum(ctx: ctx, data: plots[2].current, frequencies: freq,
+                                     in: drawRect, color: plots[2].color, lineWidth: plots[2].lineWidth)
+                        
+                        // Draw ZoomFFT if we have data
+                        if !zoomData.isEmpty && !zoomFreq.isEmpty {
+                                drawSpectrum(ctx: ctx, data: zoomData, frequencies: zoomFreq,
+                                             in: drawRect, color: zoomPlot.color, lineWidth: zoomPlot.lineWidth)
+                        }
+                } else {
+                        // Draw all regular plots
+                        for (data, color, lineWidth) in plotData {
+                                drawSpectrum(ctx: ctx, data: data, frequencies: freq,
+                                             in: drawRect, color: color, lineWidth: lineWidth)
+                        }
                 }
                 
                 // Draw HPS fundamental marker
@@ -554,7 +605,15 @@ final class StudyGraphView: UIView {
                 ]
                 
                 var x = origin.x
-                let plotsToShow = zoomState == .targetFundamental ? plots : plots
+                var plotsToShow: [Plot] = []
+                
+                switch zoomState {
+                case .fullSpectrum, .threeOctaves:
+                        plotsToShow = plots
+                case .targetFundamental:
+                        // Show only denoised and ZoomFFT in target fundamental mode
+                        plotsToShow = [plots[2], zoomPlot]
+                }
                 
                 for plot in plotsToShow {
                         // Color bar

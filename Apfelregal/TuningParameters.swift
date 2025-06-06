@@ -137,7 +137,7 @@ class TuningParameterStore: ObservableObject {
         }
         
         func zoomCenterFrequencies(totalWindowCents: Float = 100.0) -> (lower: Double, upper: Double) {
-                let center = targetNote.frequency(concertA: concertPitch)
+                let center = self.targetNote.frequency(concertA: concertPitch)
                 let (lowerF, upperF) = Note.calculateZoomCenterFrequency(centerFreq: center,
                                                                          totalWindowCents: totalWindowCents)
                 return (Double(lowerF), Double(upperF))

@@ -562,6 +562,8 @@ final class Study: ObservableObject {
                 denoisedBuffer.initialize(repeating: 0, count: halfSize)
                 qrResultBuffer.initialize(repeating: 0, count: halfSize)
                 qrTvBuffer.initialize(repeating: 0, count: halfSize)
+                
+                
         }
         
         deinit {
@@ -585,30 +587,7 @@ final class Study: ObservableObject {
                 isRunning = false
         }
         
-        private func continuousStudyLoop() {
-                while isRunning {
-                        autoreleasepool {
-                                guard let audioWindow = audioProcessor.getWindow(size: store.fftSize) else {
-                                        Thread.sleep(forTimeInterval: 0.001)
-                                        return
-                                }
-                                
-                                let result = perform(audioWindow: audioWindow)
-                                
-                                DispatchQueue.main.async { [weak self] in
-                                        self?.targetOriginalSpectrum = result.originalSpectrum
-                                        self?.targetNoiseFloor       = result.noiseFloor
-                                        self?.targetDenoisedSpectrum = result.denoisedSpectrum
-                                        self?.targetFrequencies      = result.frequencies
-                                        self?.targetHPSSpectrum      = result.hpsSpectrum
-                                        self?.targetHPSFundamental   = result.hpsFundamental
 
-
-                                }
-                        }
-                        Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update
-                }
-        }
         
         // MARK: - Main Analysis
         private func perform(audioWindow: [Float]) -> StudyResult {
@@ -670,4 +649,51 @@ final class Study: ObservableObject {
                 vDSP_vclip(output, 1, &zero, &ceiling, output, 1, vDSP_Length(count))
         }
 
+}
+
+
+extension Study {
+        // Add these properties to your Study class
+
+        
+        // MARK: - Enhanced Analysis with SBL
+
+        
+    
+        
+        // Add published properties for SBL results
+        private func continuousStudyLoop() {
+                while isRunning {
+                        autoreleasepool {
+                                guard let audioWindow = audioProcessor.getWindow(size: store.fftSize) else {
+                                        Thread.sleep(forTimeInterval: 0.001)
+                                        return
+                                }
+                                
+                                let result = perform(audioWindow: audioWindow)
+                                
+                                DispatchQueue.main.async { [weak self] in
+                                        self?.targetOriginalSpectrum = result.originalSpectrum
+                                        self?.targetNoiseFloor       = result.noiseFloor
+                                        self?.targetDenoisedSpectrum = result.denoisedSpectrum
+                                        self?.targetFrequencies      = result.frequencies
+                                        self?.targetHPSSpectrum      = result.hpsSpectrum
+                                        self?.targetHPSFundamental   = result.hpsFundamental
+                                        
+                                        
+                                }
+                        }
+                        Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update
+                }
+        }
+        
+        private func updatePublishedResults(_ result: StudyResult) {
+                targetOriginalSpectrum = result.originalSpectrum
+                targetNoiseFloor = result.noiseFloor
+                targetDenoisedSpectrum = result.denoisedSpectrum
+                targetFrequencies = result.frequencies
+                targetHPSSpectrum = result.hpsSpectrum
+                targetHPSFundamental = result.hpsFundamental
+                
+        }
 }

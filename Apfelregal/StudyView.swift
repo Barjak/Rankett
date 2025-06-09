@@ -468,6 +468,7 @@ final class StudyGraphView: UIView {
                         "\(Int(db)) dB".draw(at: CGPoint(x: 2, y: y - 5), withAttributes: attributes)
                         db += dbStep
                 }
+
                 
                 // Frequency lines - automatically calculated
                 let freqLines = calculateFrequencyGridLines()

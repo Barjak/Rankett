@@ -59,9 +59,6 @@ class TuningParameterStore: ObservableObject {
         @Published var targetNote: Note = Note(name: "a1")
         @Published var targetPartial: Int = 1
         
-        @Published var overtoneProfile: [Double] =
-        [1.0, 0.5, 0.33, 0.25, 0.2, 0.17, 0.14, 0.125]
-        
         @Published var pipeScale: Double = 138.0   // mm
         @Published var wallThickness: Double = 0.0 // mm
         @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
@@ -91,7 +88,7 @@ class TuningParameterStore: ObservableObject {
 
         
         // fftSize is a constant 8192 (immutable)
-        let fftSize: Int = 8192
+        let fftSize: Int = 8192 * 2
         let hopSize: Int = 512
 
         

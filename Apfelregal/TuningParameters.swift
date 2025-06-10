@@ -88,7 +88,7 @@ class TuningParameterStore: ObservableObject {
 
         
         // fftSize is a constant 8192 (immutable)
-        let fftSize: Int = 8192 * 2
+        let fftSize: Int = 8192
         let hopSize: Int = 512
 
         

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Accelerate
 
 // MARK: - Zoom State
 enum ZoomState: Int, CaseIterable {
@@ -177,37 +178,35 @@ struct StudyGraphViewRepresentable: UIViewRepresentable {
                         frequencies: study.targetFrequencies,
                         hpsSpectrum: study.targetHPSSpectrum,
                         hpsFundamental: study.targetHPSFundamental,
+                        musicPeaks: study.musicPeaks,
+                        musicSpectrum: study.musicSpectrum,
+                        musicGrid: study.musicGrid,
                 )
                 uiView.setNeedsDisplay()
         }
 }
-
-// MARK: - UIKit Graph View
+// MARK: - UIKit Graph View (Fixed)
 final class StudyGraphView: UIView {
         private let store: TuningParameterStore
         private var displayTimer: Timer?
         var zoomState: ZoomState = .fullSpectrum
         
-        // Pre-allocated plots
+        // Pre-allocated plots for regular spectra (only 4 now)
         private var plots: [Plot] = [
                 Plot(color: .systemBlue.withAlphaComponent(0.5), name: "Original", lineWidth: 0.8),
                 Plot(color: .systemRed, name: "Noise Floor", lineWidth: 0.8),
                 Plot(color: .systemGreen, name: "Denoised", lineWidth: 0.8),
                 Plot(color: .systemPurple, name: "HPS", lineWidth: 0.5)
-                
-                
         ]
         
-
-
-        
-        // Advanced model plots (commented out for now)
-        /*
-         private var advancedPlots: [Plot] = [
-         Plot(color: .systemOrange, name: "Parametric Peak Resolve", lineWidth: 0.8),
-
-         ]
-         */
+        // MUSIC data - kept separate at high resolution
+        private var musicSpectrum: [Float] = []
+        private var targetMusicSpectrum: [Float] = []
+        private var musicFrequencies: [Float] = []
+        private var musicPeaks: [Float] = []
+        private var targetMusicPeaks: [Float] = []
+        private let musicColor = UIColor.systemOrange
+        private let musicLineWidth: CGFloat = 1.2
         
         // Special HPS data
         private var hpsFundamental: Float = 0
@@ -273,7 +272,9 @@ final class StudyGraphView: UIView {
         
         func updateTargets(originalSpectrum: [Float], noiseFloor: [Float],
                            denoisedSpectrum: [Float], frequencies: [Float],
-                           hpsSpectrum: [Float], hpsFundamental: Float) {
+                           hpsSpectrum: [Float], hpsFundamental: Float,
+                           musicPeaks: [Double], musicSpectrum: [Double],
+                           musicGrid: [Double]) {
                 dataLock.lock()
                 defer { dataLock.unlock() }
                 
@@ -286,14 +287,29 @@ final class StudyGraphView: UIView {
                 
                 guard let mapper = binMapper else { return }
                 
-                // Map all spectra to display bins
+                // Map all regular spectra to display bins
                 plots[0].target = mapper.mapSpectrum(originalSpectrum)
                 plots[1].target = mapper.mapSpectrum(noiseFloor)
                 plots[2].target = mapper.mapSpectrum(denoisedSpectrum)
                 plots[3].target = mapper.mapHPSSpectrum(hpsSpectrum)
                 
+                if !musicSpectrum.isEmpty && !musicGrid.isEmpty {
+                        // Convert normalized frequencies to Hz
+                        let fs = store.audioSampleRate
+                        musicFrequencies = musicGrid.map { Float($0 * fs / (2.0 * Double.pi)) }
+                        
+                        // Use raw MUSIC values directly - they're already power values, not dB!
+                        targetMusicSpectrum = musicSpectrum.map { 0.1 * Float($0) }
+                        
+                        // Initialize current if empty
+                        if self.musicSpectrum.isEmpty {
+                                self.musicSpectrum = targetMusicSpectrum
+                        }
+                }
                 
+                // Store frequencies and peaks
                 self.frequencies = mapper.binFrequencies
+                self.targetMusicPeaks = musicPeaks.map { Float($0) }
                 self.targetHPSFundamental = hpsFundamental
                 
                 // Initialize current if empty
@@ -313,17 +329,30 @@ final class StudyGraphView: UIView {
                         plots[i].smooth(factor)
                 }
                 
-
+                // Smooth MUSIC spectrum
+                if musicSpectrum.count == targetMusicSpectrum.count && !targetMusicSpectrum.isEmpty {
+                        for i in 0..<musicSpectrum.count {
+                                musicSpectrum[i] = musicSpectrum[i] * factor + targetMusicSpectrum[i] * (1.0 - factor)
+                        }
+                } else if !targetMusicSpectrum.isEmpty {
+                        musicSpectrum = targetMusicSpectrum
+                }
                 
-                // Smooth HPS fundamental
-                let beta = 1.0 - factor
-                hpsFundamental = hpsFundamental * factor + targetHPSFundamental * beta
+                // Smooth special data
+                hpsFundamental = hpsFundamental * factor + targetHPSFundamental * (1.0 - factor)
+                
+                // Smooth MUSIC peaks
+                if musicPeaks.count == targetMusicPeaks.count {
+                        for i in 0..<musicPeaks.count {
+                                musicPeaks[i] = musicPeaks[i] * factor + targetMusicPeaks[i] * (1.0 - factor)
+                        }
+                } else {
+                        musicPeaks = targetMusicPeaks
+                }
                 
                 dataLock.unlock()
                 setNeedsDisplay()
         }
-        
-
         
         override func draw(_ rect: CGRect) {
                 guard let ctx = UIGraphicsGetCurrentContext() else { return }
@@ -332,10 +361,13 @@ final class StudyGraphView: UIView {
                 let plotData = plots.map { ($0.current, $0.color, $0.lineWidth) }
                 let freq = frequencies
                 let fundamental = hpsFundamental
+                let peaks = musicPeaks
+                let musicSpec = musicSpectrum
+                let musicFreq = musicFrequencies
                 dataLock.unlock()
                 
                 guard !freq.isEmpty else { return }
-
+                
                 // Update frequency range once for this draw cycle
                 updateFrequencyRange()
                 
@@ -354,17 +386,29 @@ final class StudyGraphView: UIView {
                 ctx.saveGState()
                 ctx.translateBy(x: 0, y: padding)
                 
-                // Draw regular plots based on zoom state
+                // Draw plots based on zoom state
                 if zoomState == .targetFundamental {
-                        // In target fundamental mode, show only denoised and ZoomFFT
+                        // In target fundamental mode, show denoised and MUSIC
                         drawSpectrum(ctx: ctx, data: plots[2].current, frequencies: freq,
                                      in: drawRect, color: plots[2].color, lineWidth: plots[2].lineWidth)
                         
+                        // Draw MUSIC spectrum at full resolution
+                        if !musicSpec.isEmpty && !musicFreq.isEmpty {
+                                drawMUSICSpectrum(ctx: ctx, spectrum: musicSpec, frequencies: musicFreq,
+                                                  in: drawRect)
+                        }
+                        
+                        // Draw MUSIC frequency estimates
+                        for peakFreq in peaks {
+                                if peakFreq >= currentMinFreq && peakFreq <= currentMaxFreq {
+                                        drawMUSICPeak(ctx: ctx, frequency: peakFreq, in: drawRect)
+                                }
+                        }
                 } else {
-                        // Draw all regular plots
-                        for (data, color, lineWidth) in plotData {
-                                drawSpectrum(ctx: ctx, data: data, frequencies: freq,
-                                             in: drawRect, color: color, lineWidth: lineWidth)
+                        // Draw regular plots (0-3)
+                        for i in 0..<4 {
+                                drawSpectrum(ctx: ctx, data: plots[i].current, frequencies: freq,
+                                             in: drawRect, color: plots[i].color, lineWidth: plots[i].lineWidth)
                         }
                 }
                 
@@ -382,6 +426,70 @@ final class StudyGraphView: UIView {
                 // Draw zoom indicator
                 if zoomState != .fullSpectrum {
                         drawZoomIndicator(ctx: ctx, at: CGPoint(x: rect.width - 150, y: 5))
+                }
+        }
+        
+        private func drawMUSICSpectrum(ctx: CGContext, spectrum: [Float], frequencies: [Float],
+                                       in rect: CGRect) {
+                guard spectrum.count == frequencies.count else { return }
+                
+                ctx.setStrokeColor(musicColor.cgColor)
+                ctx.setLineWidth(musicLineWidth)
+                
+                let path = CGMutablePath()
+                var started = false
+                
+                for (i, freq) in frequencies.enumerated() {
+                        // MUSIC frequencies are only valid in ±50 cents range
+                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
+                        
+                        let x = mapFrequencyToX(freq, in: rect)
+                        let normalizedValue = (spectrum[i] - minDB) / (maxDB - minDB)
+                        let y = rect.height * (1 - CGFloat(normalizedValue))
+                        
+                        if started {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                                path.move(to: CGPoint(x: x, y: y))
+                                started = true
+                        }
+                }
+                
+                ctx.addPath(path)
+                ctx.strokePath()
+        }
+        
+        private func drawMUSICPeak(ctx: CGContext, frequency: Float, in rect: CGRect) {
+                let x = mapFrequencyToX(frequency, in: rect)
+                
+                // Draw vertical line with distinct style
+                ctx.setStrokeColor(musicColor.cgColor)
+                ctx.setLineWidth(2.0)
+                ctx.setLineDash(phase: 0, lengths: [4, 2])
+                
+                ctx.move(to: CGPoint(x: x, y: 0))
+                ctx.addLine(to: CGPoint(x: x, y: rect.height))
+                ctx.strokePath()
+                
+                // Reset line dash
+                ctx.setLineDash(phase: 0, lengths: [])
+                
+                // Draw frequency label
+                let attributes: [NSAttributedString.Key: Any] = [
+                        .font: UIFont.boldSystemFont(ofSize: 10),
+                        .foregroundColor: musicColor,
+                        .backgroundColor: UIColor.black.withAlphaComponent(0.7)
+                ]
+                
+                let label = String(format: "%.1f Hz", frequency)
+                let labelSize = label.size(withAttributes: attributes)
+                
+                // Position label to avoid overlap
+                var labelY = CGFloat(10)
+                if x > rect.width / 2 {
+                        label.draw(at: CGPoint(x: x - labelSize.width - 5, y: labelY), withAttributes: attributes)
+                } else {
+                        label.draw(at: CGPoint(x: x + 5, y: labelY), withAttributes: attributes)
                 }
         }
         
@@ -571,24 +679,27 @@ final class StudyGraphView: UIView {
                 ]
                 
                 var x = origin.x
-                var plotsToShow: [Plot] = []
+                var legendItems: [(color: UIColor, name: String)] = []
                 
                 switch zoomState {
                 case .fullSpectrum, .threeOctaves:
-                        plotsToShow = plots
+                        legendItems = plots.map { ($0.color, $0.name) }
                 case .targetFundamental:
-                        plotsToShow = [plots[2]]
+                        legendItems = [
+                                (plots[2].color, plots[2].name), // Denoised
+                                (musicColor, "MUSIC")  // MUSIC
+                        ]
                 }
                 
-                for plot in plotsToShow {
+                for (color, name) in legendItems {
                         // Color bar
-                        ctx.setFillColor(plot.color.cgColor)
+                        ctx.setFillColor(color.cgColor)
                         ctx.fill(CGRect(x: x, y: origin.y + 2, width: 15, height: 2))
                         
                         // Label
                         x += 20
-                        plot.name.draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
-                        x += plot.name.size(withAttributes: attributes).width + 15
+                        name.draw(at: CGPoint(x: x, y: origin.y), withAttributes: attributes)
+                        x += name.size(withAttributes: attributes).width + 15
                 }
         }
         

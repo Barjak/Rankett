@@ -498,9 +498,11 @@ struct StudyResult {
         let frequencies: [Float]
         let hpsSpectrum: [Float]
         let hpsFundamental: Float
+        let musicPeaks: [Double]  // Add MUSIC results
+        let musicSpectrum: [Double]     // Add MUSIC pseudospectrum
+        let musicGrid: [Double]
         let timestamp: Date
         let processingTime: TimeInterval
-
 }
 
 // MARK: - Simplified Study Class
@@ -514,6 +516,9 @@ final class Study: ObservableObject {
         private let mainFFT: FFTProcessor
         private let hpsProcessor: HPSProcessor
         private let noiseFloorEstimator: NoiseFloorEstimator
+        private var musicProcessor: MUSIC?
+        private let musicSourceCount = 2
+        private let musicSubarrayLength = 40
         
         private let denoisedBuffer: UnsafeMutablePointer<Float>
         private let qrResultBuffer: UnsafeMutablePointer<Float>
@@ -532,6 +537,10 @@ final class Study: ObservableObject {
         @Published var targetHPSFundamental: Float = 0
         @Published var zoomSpectrum: [Float] = []
         @Published var zoomFrequencies: [Float] = []
+        
+        @Published var musicPeaks: [Double] = []
+        @Published var musicSpectrum: [Double] = []
+        @Published var musicGrid: [Double] = []
         
         init(audioProcessor: AudioProcessor, store: TuningParameterStore) {
                 self.audioProcessor = audioProcessor
@@ -563,7 +572,12 @@ final class Study: ObservableObject {
                 qrResultBuffer.initialize(repeating: 0, count: halfSize)
                 qrTvBuffer.initialize(repeating: 0, count: halfSize)
                 
-                
+                self.musicProcessor = MUSIC(
+                        store: store,
+                        sourceCount: musicSourceCount,
+                        subarrayLength: musicSubarrayLength,
+                        snapshotCount: 50  // Default snapshot count
+                )
         }
         
         deinit {
@@ -620,7 +634,9 @@ final class Study: ObservableObject {
                         sampleRate: Float(store.audioSampleRate)
                 )
                 
-
+                // Perform MUSIC analysis
+                let (musicPeaks, musicSpec, musicGrid) = performMUSICAnalysis(audioWindow: audioWindow)
+                
                 // Package and return results
                 return StudyResult(
                         originalSpectrum: Array(UnsafeBufferPointer(start: mainFFT.magnitudeBuffer, count: mainFFT.halfSize)),
@@ -629,10 +645,35 @@ final class Study: ObservableObject {
                         frequencies: Array(UnsafeBufferPointer(start: mainFFT.frequencyBuffer, count: mainFFT.halfSize)),
                         hpsSpectrum: hpsSpectrum,
                         hpsFundamental: hpsFundamental,
+                        musicPeaks: musicPeaks,
+                        musicSpectrum: musicSpec,
+                        musicGrid: musicGrid,
                         timestamp: Date(),
-                        processingTime: CFAbsoluteTimeGetCurrent() - overallStart,
-
+                        processingTime: CFAbsoluteTimeGetCurrent() - overallStart
                 )
+        }
+        private func performMUSICAnalysis(audioWindow: [Float]) -> ([Double], [Double], [Double]) {
+                guard var music = musicProcessor else {
+                        return ([], [], [])
+                }
+                
+                // Update frequency grid if target has changed
+                let currentTargetFreq = Double(store.targetFrequency())
+                music.updateFrequencyGrid(targetFrequency: currentTargetFreq)
+                
+                // Update snapshot matrix with current audio window
+                music.updateSnapshotMatrix(audioWindow: audioWindow)
+                
+                // Compute pseudospectrum and estimate frequencies
+                let spectrum = music.pseudospectrum()
+                let estimatedPeaks = music.estimatePeaks()
+                
+                // Store the updated processor
+                musicProcessor = music
+                
+                // Note: music.freqGrid is already in normalized frequency (radians/sample)
+                // The conversion to Hz happens in StudyGraphView.updateTargets()
+                return (estimatedPeaks, spectrum, music.freqGrid)
         }
 
         // MARK: - Separate Denoising Function (moved out of NoiseFloorEstimator)
@@ -649,19 +690,6 @@ final class Study: ObservableObject {
                 vDSP_vclip(output, 1, &zero, &ceiling, output, 1, vDSP_Length(count))
         }
 
-}
-
-
-extension Study {
-        // Add these properties to your Study class
-
-        
-        // MARK: - Enhanced Analysis with SBL
-
-        
-    
-        
-        // Add published properties for SBL results
         private func continuousStudyLoop() {
                 while isRunning {
                         autoreleasepool {
@@ -674,13 +702,14 @@ extension Study {
                                 
                                 DispatchQueue.main.async { [weak self] in
                                         self?.targetOriginalSpectrum = result.originalSpectrum
-                                        self?.targetNoiseFloor       = result.noiseFloor
+                                        self?.targetNoiseFloor = result.noiseFloor
                                         self?.targetDenoisedSpectrum = result.denoisedSpectrum
-                                        self?.targetFrequencies      = result.frequencies
-                                        self?.targetHPSSpectrum      = result.hpsSpectrum
-                                        self?.targetHPSFundamental   = result.hpsFundamental
-                                        
-                                        
+                                        self?.targetFrequencies = result.frequencies
+                                        self?.targetHPSSpectrum = result.hpsSpectrum
+                                        self?.targetHPSFundamental = result.hpsFundamental
+                                        self?.musicPeaks = result.musicPeaks
+                                        self?.musicSpectrum = result.musicSpectrum
+                                        self?.musicGrid = result.musicGrid
                                 }
                         }
                         Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update

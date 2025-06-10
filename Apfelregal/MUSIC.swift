@@ -6,10 +6,71 @@ import SwiftUI
 struct MUSIC {
         let store: TuningParameterStore
         let sourceCount: Int
-        let freqGrid: [Double]      // radians/sample grid
+        var freqGrid: [Double] = []     // Make it mutable and initially empty
+        let gridPoints: Int = 100  // Number of points in the frequency grid
         var snapshotMatrix: [DSPComplex] // flattened: M rows × N cols
         let subarrayLength: Int     // M
         let snapshotCount: Int      // N
+        
+        // Track the last target frequency to avoid unnecessary updates
+        private var lastTargetFrequency: Double = 0
+
+        
+        init(store: TuningParameterStore, sourceCount: Int, subarrayLength: Int, snapshotCount: Int) {
+                self.store = store
+                self.sourceCount = sourceCount
+                self.subarrayLength = subarrayLength
+                self.snapshotCount = snapshotCount
+                self.snapshotMatrix = [DSPComplex](repeating: DSPComplex(), count: subarrayLength * snapshotCount)
+                
+                // Initialize with default frequency grid
+                updateFrequencyGrid(targetFrequency: Double(store.targetFrequency()))
+        }
+        
+        /// Update the frequency grid based on target frequency (±50 cents window)
+        mutating func updateFrequencyGrid(targetFrequency: Double) {
+                // Only update if the target frequency has changed significantly
+                if abs(targetFrequency - lastTargetFrequency) < 0.01 {
+                        return
+                }
+                
+                lastTargetFrequency = targetFrequency
+                
+                let centsToRatio = { (cents: Double) in pow(2.0, cents / 1200.0) }
+                let freqLow = targetFrequency * centsToRatio(-50)
+                let freqHigh = targetFrequency * centsToRatio(50)
+                
+                // Convert to normalized frequencies (radians/sample)
+                let fs = store.audioSampleRate
+                let omegaLow = 2.0 * Double.pi * freqLow / fs
+                let omegaHigh = 2.0 * Double.pi * freqHigh / fs
+                
+                // Create frequency grid
+                freqGrid = []
+                for i in 0..<gridPoints {
+                        let omega = omegaLow + (omegaHigh - omegaLow) * Double(i) / Double(gridPoints - 1)
+                        freqGrid.append(omega)
+                }
+        }
+        
+        /// Update snapshot matrix from audio window
+        mutating func updateSnapshotMatrix(audioWindow: [Float]) {
+                let M = subarrayLength
+                let maxSnapshots = audioWindow.count - M + 1
+                let N = min(maxSnapshots, snapshotCount)
+                
+                // Fill snapshot matrix with overlapping segments
+                let stride = max(1, maxSnapshots / N)
+                for n in 0..<N {
+                        let startIdx = n * stride
+                        for m in 0..<M {
+                                let idx = n * M + m
+                                if startIdx + m < audioWindow.count {
+                                        snapshotMatrix[idx] = DSPComplex(real: audioWindow[startIdx + m], imag: 0)
+                                }
+                        }
+                }
+        }
         
         /// Compute pseudospectrum over grid
         mutating func pseudospectrum() -> [Double] {
@@ -182,7 +243,7 @@ struct MUSIC {
         }
         
         /// Peak-finding: returns top `sourceCount` frequencies in Hz
-        mutating func estimateFrequencies() -> [Double] {
+        mutating func estimatePeaks() -> [Double] {
                 let spec = pseudospectrum()
                 let freqsHz = freqGrid.map { Double($0) * store.audioSampleRate / (2*Double.pi) }
                 return Array(zip(freqsHz, spec)

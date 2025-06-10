@@ -40,7 +40,7 @@ enum Temperament: String, CaseIterable {
         case justIntonation   = "Just Intonation"
         case pythagorean      = "Pythagorean"
         case meantone         = "Meantone"
-        case werkmeister      = "Werkmeister III"
+        case werkmeister      = "Wankmeister III"
         case valotti          = "Valotti"
 }
 
@@ -54,13 +54,14 @@ struct Instrument: Identifiable, Equatable {
 
 // MARK: – TuningParameterStore (now contains everything from AnalyzerConfig + your tuning params)
 
-class TuningParameterStore: ObservableObject {
+        class TuningParameterStore: ObservableObject {
+                @Published var audioSampleRate: Double = 44_100
+
         @Published var concertPitch: Double = 440.0
         @Published var targetNote: Note = Note(name: "a1")
         @Published var targetPartial: Int = 1
         
-        @Published var pipeScale: Double = 138.0   // mm
-        @Published var wallThickness: Double = 0.0 // mm
+
         @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
         
         @Published var temperament: Temperament = .equal
@@ -80,15 +81,13 @@ class TuningParameterStore: ObservableObject {
         )
         
         @Published var centsError: Float = 0.0
-        // sampleRate is fixed at 44 100 Hz (immutable)
-        let audioSampleRate: Double = 44_100
         // Nyquist is derived automatically
         var nyquistFrequency: Double { audioSampleRate * 0.5 }
         
 
         
         // fftSize is a constant 8192 (immutable)
-        let fftSize: Int = 8192
+        let fftSize: Int = 2048
         let hopSize: Int = 512
 
         

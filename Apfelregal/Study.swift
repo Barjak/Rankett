@@ -712,7 +712,7 @@ final class Study: ObservableObject {
                                         self?.musicGrid = result.musicGrid
                                 }
                         }
-                        Thread.sleep(forTimeInterval: 0.005) // ~200 Hz update
+                        Thread.sleep(forTimeInterval: 1.0 / 20.0)
                 }
         }
         

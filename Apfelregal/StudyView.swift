@@ -402,10 +402,22 @@ final class StudyGraphView: UIView {
                         }
                 } else {
                         // Draw regular plots (0-3)
-                        for i in 0..<4 {
-                                drawSpectrum(ctx: ctx, data: plots[i].current, frequencies: freq,
-                                             in: drawRect, color: plots[i].color, lineWidth: plots[i].lineWidth)
+//                        for i in 0..<4 {
+//                                drawSpectrum(ctx: ctx, data: plots[i].current, frequencies: freq,
+//                                             in: drawRect, color: plots[i].color, lineWidth: plots[i].lineWidth)
+//                        }
+                        // Draw MUSIC spectrum at full resolution
+                        if !musicSpec.isEmpty && !musicFreq.isEmpty {
+                                drawMUSICSpectrum(ctx: ctx, spectrum: musicSpec, frequencies: musicFreq,
+                                                  in: drawRect)
                         }
+//                        
+//                        // Draw MUSIC frequency estimates
+//                        for peakFreq in peaks {
+//                                if peakFreq >= Float(store.currentMinFreq) && peakFreq <= Float(store.currentMaxFreq) {
+//                                        drawMUSICPeak(ctx: ctx, frequency: peakFreq, in: drawRect)
+//                                }
+//                        }
                 }
                 
                 // Draw HPS fundamental marker
@@ -440,7 +452,7 @@ final class StudyGraphView: UIView {
                         guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (10.0 * spectrum[i] - minDB) / (maxDB - minDB)
+                        let normalizedValue = (2.0 * spectrum[i] - minDB) / (maxDB - minDB)
                         let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
                         
                         if started {

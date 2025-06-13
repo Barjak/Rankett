@@ -7,14 +7,15 @@ struct MUSIC {
         let store: TuningParameterStore
         let sourceCount: Int
         var freqGrid: [Double] = []     // Make it mutable and initially empty
-        let gridPoints: Int = 100  // Number of points in the frequency grid
         var snapshotMatrix: [DSPComplex] // flattened: M rows × N cols
         let subarrayLength: Int     // M
         let snapshotCount: Int      // N
         
-        // Track the last target frequency to avoid unnecessary updates
-        private var lastTargetFrequency: Double = 0
-
+        // Track the last bounds to avoid unnecessary updates
+        private var lastMinFreq: Double = 0
+        private var lastMaxFreq: Double = 0
+        private var lastResolution: Double = 0
+        
         
         init(store: TuningParameterStore, sourceCount: Int, subarrayLength: Int, snapshotCount: Int) {
                 self.store = store
@@ -24,31 +25,38 @@ struct MUSIC {
                 self.snapshotMatrix = [DSPComplex](repeating: DSPComplex(), count: subarrayLength * snapshotCount)
                 
                 // Initialize with default frequency grid
-                updateFrequencyGrid(targetFrequency: Double(store.targetFrequency()))
+                updateFrequencyGrid()
         }
         
-        /// Update the frequency grid based on target frequency (±50 cents window)
-        mutating func updateFrequencyGrid(targetFrequency: Double) {
-                // Only update if the target frequency has changed significantly
-                if abs(targetFrequency - lastTargetFrequency) < 0.01 {
+        /// Update the frequency grid based on current frequency bounds from store
+        mutating func updateFrequencyGrid() {
+                // Only update if the bounds or resolution have changed
+                if abs(store.currentMinFreq - lastMinFreq) < 0.01 &&
+                        abs(store.currentMaxFreq - lastMaxFreq) < 0.01 &&
+                        abs(store.resolutionMUSIC - lastResolution) < 0.5 {
                         return
                 }
                 
-                lastTargetFrequency = targetFrequency
-                
-                let centsToRatio = { (cents: Double) in pow(2.0, cents / 1200.0) }
-                let freqLow = targetFrequency * centsToRatio(-50)
-                let freqHigh = targetFrequency * centsToRatio(50)
+                lastMinFreq = store.currentMinFreq
+                lastMaxFreq = store.currentMaxFreq
+                lastResolution = store.resolutionMUSIC
                 
                 // Convert to normalized frequencies (radians/sample)
                 let fs = store.audioSampleRate
-                let omegaLow = 2.0 * Double.pi * freqLow / fs
-                let omegaHigh = 2.0 * Double.pi * freqHigh / fs
+                let omegaLow = 2.0 * Double.pi * store.currentMinFreq / fs
+                let omegaHigh = 2.0 * Double.pi * store.currentMaxFreq / fs
                 
-                // Create frequency grid
+                // Create logarithmic frequency grid
+                let gridPoints = Int(store.resolutionMUSIC)
                 freqGrid = []
+                
+                // Work in log space for even logarithmic spacing
+                let logLow = log(omegaLow)
+                let logHigh = log(omegaHigh)
+                
                 for i in 0..<gridPoints {
-                        let omega = omegaLow + (omegaHigh - omegaLow) * Double(i) / Double(gridPoints - 1)
+                        let logOmega = logLow + (logHigh - logLow) * Double(i) / Double(gridPoints - 1)
+                        let omega = exp(logOmega)
                         freqGrid.append(omega)
                 }
         }
@@ -74,6 +82,9 @@ struct MUSIC {
         
         /// Compute pseudospectrum over grid
         mutating func pseudospectrum() -> [Double] {
+                // Update grid if needed before computing spectrum
+                updateFrequencyGrid()
+                
                 let M = subarrayLength
                 let N = snapshotCount
                 

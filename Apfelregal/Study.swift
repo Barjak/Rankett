@@ -659,7 +659,7 @@ final class Study: ObservableObject {
                 
                 // Update frequency grid if target has changed
                 let currentTargetFreq = Double(store.targetFrequency())
-                music.updateFrequencyGrid(targetFrequency: currentTargetFreq)
+                music.updateFrequencyGrid()
                 
                 // Update snapshot matrix with current audio window
                 music.updateSnapshotMatrix(audioWindow: audioWindow)

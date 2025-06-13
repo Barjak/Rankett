@@ -115,6 +115,7 @@ struct Instrument: Identifiable, Equatable {
         @Published var renderWithLogFrequencyScale: Bool = true
         @Published var renderMinFrequency: Double = 20
         @Published var renderMaxFrequency: Double = 20_000
+        @Published var resolutionMUSIC: Double = 200
         @Published var currentMinFreq: Double = 20
         @Published var currentMaxFreq: Double = 20_000
                 

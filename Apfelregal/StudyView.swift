@@ -454,7 +454,7 @@ final class StudyGraphView: UIView {
                         guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (15.0 * spectrum[i] - minDB) / (maxDB - minDB)
+                        let normalizedValue = (1.0 * spectrum[i] - minDB) / (maxDB - minDB)
                         let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
                         
                         if started {

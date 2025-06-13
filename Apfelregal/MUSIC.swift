@@ -10,6 +10,11 @@ struct MUSIC {
         var snapshotMatrix: [DSPComplex] // flattened: M rows × N cols
         let subarrayLength: Int     // M
         let snapshotCount: Int      // N
+
+        
+        // Harmonic weights: [1, 1/4, 1/9, 1/16, 1/25]
+        let harmonicWeights: [Double] = [1.0, 1.0, 0.7, 0.5, 0.3]
+        let numHarmonics: Int = 5
         
         // Track the last bounds to avoid unnecessary updates
         private var lastMinFreq: Double = 0
@@ -80,11 +85,36 @@ struct MUSIC {
                 }
         }
         
+        /// Create composite steering vector with harmonics
+        func createHarmonicSteeringVector(omega: Double) -> [DSPDoubleComplex] {
+                let M = subarrayLength
+                var harmonicSteering = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: M)
+                
+                // Build composite steering vector: sum of weighted harmonic steering vectors
+                for m in 0..<M {
+                        var real = 0.0
+                        var imag = 0.0
+                        
+                        // Sum over harmonics
+                        for h in 0..<numHarmonics {
+                                let harmonicFreq = omega * Double(h + 1)  // ω, 2ω, 3ω, 4ω, 5ω
+                                let phase = -harmonicFreq * Double(m)
+                                let weight = harmonicWeights[h]
+                                
+                                real += weight * cos(phase)
+                                imag += weight * sin(phase)
+                        }
+                        
+                        harmonicSteering[m] = DSPDoubleComplex(real: real, imag: imag)
+                }
+                
+                return harmonicSteering
+        }
+        
         /// Compute pseudospectrum over grid
         mutating func pseudospectrum() -> [Double] {
                 // Update grid if needed before computing spectrum
                 updateFrequencyGrid()
-                
                 let M = subarrayLength
                 let N = snapshotCount
                 
@@ -203,26 +233,22 @@ struct MUSIC {
                         }
                 }
                 
-                // 4) Pseudospectrum: 1 / ||E_n^H a(ω)||²
+                // 4) Pseudospectrum: 1 / ||E_n^H * h*a(ω)||²
                 return freqGrid.map { omega in
-                        // Steering vector a(ω)
-                        var a_double = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: M)
-                        for m in 0..<M {
-                                let phase = -omega * Double(m)
-                                a_double[m] = DSPDoubleComplex(real: cos(phase), imag: sin(phase))
-                        }
+                        // Create harmonic steering vector h*a(ω)
+                        let a_harmonic = createHarmonicSteeringVector(omega: omega)
                         
-                        // Compute E_n^H * a using BLAS zgemv
+                        // Compute E_n^H * a_harmonic using BLAS zgemv
                         var temp_double = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: noiseDim)
                         var alpha_mv = DSPDoubleComplex(real: 1.0, imag: 0.0)
                         var beta_mv = DSPDoubleComplex(real: 0.0, imag: 0.0)
                         
                         noiseVecs_double.withUnsafeBufferPointer { Enptr in
-                                a_double.withUnsafeBufferPointer { aptr in
+                                a_harmonic.withUnsafeBufferPointer { aptr in
                                         temp_double.withUnsafeMutableBufferPointer { tempPtr in
                                                 withUnsafePointer(to: &alpha_mv) { alphaPtr in
                                                         withUnsafePointer(to: &beta_mv) { betaPtr in
-                                                                // temp = alpha * E_n^H * a + beta * temp
+                                                                // temp = alpha * E_n^H * a_harmonic + beta * temp
                                                                 cblas_zgemv(
                                                                         CblasColMajor,      // matrix storage order
                                                                         CblasConjTrans,     // conjugate transpose E_n
@@ -231,7 +257,7 @@ struct MUSIC {
                                                                         OpaquePointer(alphaPtr),         // scaling factor
                                                                         OpaquePointer(Enptr.baseAddress),  // matrix E_n
                                                                         Int(M),           // leading dimension
-                                                                        OpaquePointer(aptr.baseAddress),   // vector a
+                                                                        OpaquePointer(aptr.baseAddress),   // vector a_harmonic
                                                                         1,                  // increment for a
                                                                         OpaquePointer(betaPtr),           // scaling for temp
                                                                         OpaquePointer(tempPtr.baseAddress),// output vector
@@ -243,7 +269,7 @@ struct MUSIC {
                                 }
                         }
                         
-                        // Compute ||E_n^H * a||²
+                        // Compute ||E_n^H * a_harmonic||²
                         var power: Double = 0.0
                         for i in 0..<noiseDim {
                                 power += temp_double[i].real * temp_double[i].real + temp_double[i].imag * temp_double[i].imag

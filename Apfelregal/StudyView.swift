@@ -439,8 +439,11 @@ final class StudyGraphView: UIView {
                 }
         }
         
-        private func drawMUSICSpectrum(ctx: CGContext, spectrum: [Float], frequencies: [Float],
-                                       in rect: CGRect) {
+        private func drawMUSICSpectrum(ctx: CGContext,
+                                       spectrum: [Float],
+                                       frequencies: [Float],
+                                       in rect: CGRect,
+                                       useDecibels: Bool = true) {
                 guard spectrum.count == frequencies.count else { return }
                 
                 ctx.setStrokeColor(musicColor.cgColor)
@@ -451,11 +454,31 @@ final class StudyGraphView: UIView {
                 
                 for (i, freq) in frequencies.enumerated() {
                         // MUSIC frequencies are only valid in ±50 cents range
-                        guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
+                        guard freq >= Float(store.currentMinFreq),
+                              freq <= Float(store.currentMaxFreq) else {
+                                continue
+                        }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (1.0 * spectrum[i] - minDB) / (maxDB - minDB)
-                        let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
+                        
+                        // Choose value: either raw or decibels
+                        let rawValue = spectrum[i]
+                        let value: Float
+                        if useDecibels {
+                                // Convert linear magnitude to decibels
+                                // Add a small eps to avoid log(0)
+                                let eps: Float = 1e-8
+                                value = 20 * log10(max(rawValue, eps))
+                        } else {
+                                value = rawValue
+                        }
+                        
+                        // Normalize between minDB..maxDB (for dB), or min..max for raw if you'd like
+                        let normalizedValue = (value - minDB) / (maxDB - minDB)
+                        
+                        // Clamp in [0,1] to avoid NaNs or overshoot
+                        let clamped = min(max(normalizedValue, 0), 1)
+                        let y = rect.height * (1 - CGFloat(clamped))
                         
                         if started {
                                 path.addLine(to: CGPoint(x: x, y: y))
@@ -468,6 +491,8 @@ final class StudyGraphView: UIView {
                 ctx.addPath(path)
                 ctx.strokePath()
         }
+
+
         
         private func drawMUSICPeak(ctx: CGContext, frequency: Float, in rect: CGRect) {
                 let x = mapFrequencyToX(frequency, in: rect)

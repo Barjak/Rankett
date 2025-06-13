@@ -10,9 +10,7 @@ struct MUSIC {
         var snapshotMatrix: [DSPComplex] // flattened: M rows × N cols
         let subarrayLength: Int     // M
         let snapshotCount: Int      // N
-        
-        // HMUSIC parameters
-        let numHarmonics: Int = 5   // L in the math notation
+
         
         // Track the last bounds to avoid unnecessary updates
         private var lastMinFreq: Double = 0
@@ -84,45 +82,12 @@ struct MUSIC {
                                 }
                         }
                 }
-                
-                // Mark noise subspace as needing recomputation
-                noiseSubspace = nil
         }
         
-        /// Create harmonic steering matrix A(ω) = [a(ω), a(2ω), ..., a(Lω)]
-        func createHarmonicSteeringMatrix(omega: Double) -> [DSPDoubleComplex] {
-                let M = subarrayLength
-                let L = numHarmonics
-                
-                // Matrix stored column-major: M rows × L columns
-                var A = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: M * L)
-                
-                for harmonic in 0..<L {
-                        let harmonicOmega = omega * Double(harmonic + 1)  // ω, 2ω, 3ω, ...
-                        
-                        // Skip if harmonic is above Nyquist
-                        if harmonicOmega >= Double.pi {
-                                // Fill with zeros for this harmonic
-                                for m in 0..<M {
-                                        let idx = harmonic * M + m  // Column-major indexing
-                                        A[idx] = DSPDoubleComplex(real: 0.0, imag: 0.0)
-                                }
-                        } else {
-                                // Fill the harmonic's steering vector
-                                for m in 0..<M {
-                                        let phase = -harmonicOmega * Double(m)
-                                        let idx = harmonic * M + m  // Column-major indexing
-                                        A[idx] = DSPDoubleComplex(real: cos(phase), imag: sin(phase))
-                                }
-                        }
-                }
-                
-                return A
-        }
-        
-        /// Compute noise subspace if not already cached
-        mutating func computeNoiseSubspace() {
-                guard noiseSubspace == nil else { return }
+        /// Compute pseudospectrum over grid
+        mutating func pseudospectrum() -> [Double] {
+                // Update grid if needed before computing spectrum
+                updateFrequencyGrid()
                 
                 let M = subarrayLength
                 let N = snapshotCount
@@ -165,6 +130,11 @@ struct MUSIC {
                                         }
                                 }
                         }
+                }
+                
+                // Convert back to single precision
+                for i in 0..<(M * M) {
+                        R[i] = DSPComplex(real: Float(R_double[i].real), imag: Float(R_double[i].imag))
                 }
                 
                 // 2) Eigendecomposition using zheev_
@@ -224,10 +194,8 @@ struct MUSIC {
                 precondition(info == 0, "Eigendecomposition failed: \(info)")
                 
                 // 3) Build noise subspace from smallest eigenvalues
-                // For HMUSIC, we need to account for the fact that each source contributes L harmonics
-                let totalHarmonics = sourceCount * numHarmonics
-                noiseDim = M - min(totalHarmonics, M - 1)  // Ensure we have at least 1 noise dimension
-                
+                // A now contains eigenvectors in columns
+                let noiseDim = M - sourceCount
                 var noiseVecs_double = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: M * noiseDim)
                 
                 // Extract eigenvectors corresponding to smallest eigenvalues
@@ -239,80 +207,56 @@ struct MUSIC {
                         }
                 }
                 
-                // Cache the noise subspace
-                self.noiseSubspace = noiseVecs_double
-        }
-        
-        /// Compute HMUSIC pseudospectrum value for a single frequency
-        func hMusicPseudospectrum(omega: Double) -> Double {
-                guard let noiseVecs = noiseSubspace else {
-                        fatalError("Noise subspace not computed")
-                }
-                
-                let M = subarrayLength
-                let L = numHarmonics
-                
-                // Create harmonic steering matrix A(ω)
-                let A = createHarmonicSteeringMatrix(omega: omega)
-                
-                // Compute U_n^H * A using BLAS zgemm
-                // Result is noiseDim × L matrix
-                var UnHA = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: noiseDim * L)
-                var alpha = DSPDoubleComplex(real: 1.0, imag: 0.0)
-                var beta = DSPDoubleComplex(real: 0.0, imag: 0.0)
-                
-                noiseVecs.withUnsafeBufferPointer { Unptr in
-                        A.withUnsafeBufferPointer { Aptr in
-                                UnHA.withUnsafeMutableBufferPointer { UnHAptr in
-                                        withUnsafePointer(to: &alpha) { alphaPtr in
-                                                withUnsafePointer(to: &beta) { betaPtr in
-                                                        // UnHA = alpha * Un^H * A + beta * UnHA
-                                                        cblas_zgemm(
-                                                                CblasColMajor,      // matrix storage order
-                                                                CblasConjTrans,     // conjugate transpose Un
-                                                                CblasNoTrans,       // no transpose A
-                                                                Int(noiseDim),      // rows of result
-                                                                Int(L),             // columns of result
-                                                                Int(M),             // common dimension
-                                                                OpaquePointer(alphaPtr),           // scaling factor
-                                                                OpaquePointer(Unptr.baseAddress),  // matrix Un
-                                                                Int(M),             // leading dimension of Un
-                                                                OpaquePointer(Aptr.baseAddress),   // matrix A
-                                                                Int(M),             // leading dimension of A
-                                                                OpaquePointer(betaPtr),            // scaling for result
-                                                                OpaquePointer(UnHAptr.baseAddress),// output matrix
-                                                                Int(noiseDim)       // leading dimension of result
-                                                        )
+                // 4) Pseudospectrum: 1 / ||E_n^H a(ω)||²
+                return freqGrid.map { omega in
+                        // Steering vector a(ω)
+                        var a_double = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: M)
+                        for m in 0..<M {
+                                let phase = -omega * Double(m)
+                                a_double[m] = DSPDoubleComplex(real: cos(phase), imag: sin(phase))
+                        }
+                        
+                        // Compute E_n^H * a using BLAS zgemv
+                        var temp_double = [DSPDoubleComplex](repeating: DSPDoubleComplex(), count: noiseDim)
+                        var alpha_mv = DSPDoubleComplex(real: 1.0, imag: 0.0)
+                        var beta_mv = DSPDoubleComplex(real: 0.0, imag: 0.0)
+                        
+                        noiseVecs_double.withUnsafeBufferPointer { Enptr in
+                                a_double.withUnsafeBufferPointer { aptr in
+                                        temp_double.withUnsafeMutableBufferPointer { tempPtr in
+                                                withUnsafePointer(to: &alpha_mv) { alphaPtr in
+                                                        withUnsafePointer(to: &beta_mv) { betaPtr in
+                                                                // temp = alpha * E_n^H * a + beta * temp
+                                                                cblas_zgemv(
+                                                                        CblasColMajor,      // matrix storage order
+                                                                        CblasConjTrans,     // conjugate transpose E_n
+                                                                        Int(M),           // rows of E_n
+                                                                        Int(noiseDim),    // columns of E_n
+                                                                        OpaquePointer(alphaPtr),         // scaling factor
+                                                                        OpaquePointer(Enptr.baseAddress),  // matrix E_n
+                                                                        Int(M),           // leading dimension
+                                                                        OpaquePointer(aptr.baseAddress),   // vector a
+                                                                        1,                  // increment for a
+                                                                        OpaquePointer(betaPtr),           // scaling for temp
+                                                                        OpaquePointer(tempPtr.baseAddress),// output vector
+                                                                        1                   // increment for temp
+                                                                )
+                                                        }
                                                 }
                                         }
                                 }
                         }
+                        
+                        // Compute ||E_n^H * a||²
+                        var power: Double = 0.0
+                        for i in 0..<noiseDim {
+                                power += temp_double[i].real * temp_double[i].real + temp_double[i].imag * temp_double[i].imag
+                        }
+                        
+                        return 1.0 / max(power, 1e-12)
                 }
-                
-                // Compute trace[A^H * Un * Un^H * A] = ||Un^H * A||_F^2 (Frobenius norm squared)
-                var trace = 0.0
-                for i in 0..<(noiseDim * L) {
-                        trace += UnHA[i].real * UnHA[i].real + UnHA[i].imag * UnHA[i].imag
-                }
-                
-                // HMUSIC pseudospectrum formula: P_HMUSIC(ω) = L(M-L) / trace[A^H * Un * Un^H * A]
-                let normalizationFactor = Double(L * (M - L))
-                return normalizationFactor / max(trace, 1e-12)
         }
         
-        /// Compute HMUSIC pseudospectrum over the frequency grid
-        mutating func pseudospectrum() -> [Double] {
-                // Update grid if needed before computing spectrum
-                updateFrequencyGrid()
-                
-                // Ensure noise subspace is computed
-                computeNoiseSubspace()
-                
-                // For each frequency in the grid, compute HMUSIC pseudospectrum
-                return freqGrid.map { omega in
-                        hMusicPseudospectrum(omega: omega)
-                }
-        }
         
         /// Peak-finding: returns top `sourceCount` frequencies in Hz
         mutating func estimatePeaks() -> [Double] {

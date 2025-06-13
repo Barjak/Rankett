@@ -115,7 +115,9 @@ struct Instrument: Identifiable, Equatable {
         @Published var renderWithLogFrequencyScale: Bool = true
         @Published var renderMinFrequency: Double = 20
         @Published var renderMaxFrequency: Double = 20_000
-        
+        @Published var currentMinFreq: Double = 20
+        @Published var currentMaxFreq: Double = 20_000
+                
         let noiseFloorMaxIterations = 10
         let noiseFloorConvergenceThreshold: Float = 1e-4
         @Published var noiseFloorBandwidthSemitones: Float = 5.0

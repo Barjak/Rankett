@@ -216,10 +216,6 @@ final class StudyGraphView: UIView {
         private var binMapper: BinMapper?
         private let dataLock = NSLock()
         
-        // Current view frequency range (calculated once per draw)
-        private var currentMinFreq: Float = 20
-        private var currentMaxFreq: Float = 20_000
-        
         // Drawing constants from store
         private var padding: CGFloat { 40 }
         private var minDB: Float { -80 }
@@ -252,21 +248,21 @@ final class StudyGraphView: UIView {
         private func updateFrequencyRange() {
                 switch zoomState {
                 case .fullSpectrum:
-                        currentMinFreq = Float(store.renderMinFrequency)
-                        currentMaxFreq = Float(store.renderMaxFrequency)
+                        store.currentMinFreq = store.renderMinFrequency
+                        store.currentMaxFreq = store.renderMaxFrequency
                         
                 case .threeOctaves:
                         // Three octaves above target pitch, starting at -1 semitone
-                        let baseFreq = Float(store.targetNote.transposed(by: -1).frequency(concertA: store.concertPitch))
-                        let maxFreq = Float(store.targetNote.transposed(by: 12 * 3).frequency(concertA: store.concertPitch))
-                        currentMinFreq = baseFreq
-                        currentMaxFreq = min(maxFreq, Float(store.renderMaxFrequency))
+                        let baseFreq = store.targetNote.transposed(by: -1).frequency(concertA: store.concertPitch)
+                        let maxFreq = store.targetNote.transposed(by: 12 * 3).frequency(concertA: store.concertPitch)
+                        store.currentMinFreq = Double(baseFreq)
+                        store.currentMaxFreq = min(Double(maxFreq), store.renderMaxFrequency)
                         
                 case .targetFundamental:
                         // ±50 cents around target pitch
-                        let centerFreq = store.targetFrequency()
-                        currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
-                        currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
+                        let centerFreq = Double(store.targetFrequency())
+                        store.currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
+                        store.currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
         }
         
@@ -400,7 +396,7 @@ final class StudyGraphView: UIView {
                         
                         // Draw MUSIC frequency estimates
                         for peakFreq in peaks {
-                                if peakFreq >= currentMinFreq && peakFreq <= currentMaxFreq {
+                                if peakFreq >= Float(store.currentMinFreq) && peakFreq <= Float(store.currentMaxFreq) {
                                         drawMUSICPeak(ctx: ctx, frequency: peakFreq, in: drawRect)
                                 }
                         }
@@ -413,7 +409,7 @@ final class StudyGraphView: UIView {
                 }
                 
                 // Draw HPS fundamental marker
-                if fundamental > currentMinFreq && fundamental < currentMaxFreq {
+                if fundamental > Float(store.currentMinFreq) && fundamental < Float(store.currentMaxFreq) {
                         drawFundamentalMarker(ctx: ctx, frequency: fundamental,
                                               in: drawRect, color: plots[3].color)
                 }
@@ -441,11 +437,11 @@ final class StudyGraphView: UIView {
                 
                 for (i, freq) in frequencies.enumerated() {
                         // MUSIC frequencies are only valid in ±50 cents range
-                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
+                        guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (spectrum[i] - minDB) / (maxDB - minDB)
-                        let y = rect.height * (1 - CGFloat(normalizedValue))
+                        let normalizedValue = (10.0 * spectrum[i] - minDB) / (maxDB - minDB)
+                        let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
                         
                         if started {
                                 path.addLine(to: CGPoint(x: x, y: y))
@@ -495,12 +491,12 @@ final class StudyGraphView: UIView {
         
         private func mapFrequencyToX(_ freq: Float, in rect: CGRect) -> CGFloat {
                 if store.renderWithLogFrequencyScale {
-                        let logMin = log10(Double(currentMinFreq))
-                        let logMax = log10(Double(currentMaxFreq))
-                        let logFreq = log10(Double(freq))
-                        return CGFloat((logFreq - logMin) / (logMax - logMin)) * rect.width
+                        let logMin = log10(store.currentMinFreq)
+                        let logMax = log10(store.currentMaxFreq)
+                        let logFreq = log10(freq)
+                        return CGFloat((Double(logFreq) - logMin) / (logMax - logMin)) * rect.width
                 } else {
-                        let normalized = (freq - currentMinFreq) / (currentMaxFreq - currentMinFreq)
+                        let normalized = (Double(freq) - store.currentMinFreq) / (store.currentMaxFreq - store.currentMinFreq)
                         return CGFloat(normalized) * rect.width
                 }
         }
@@ -517,7 +513,7 @@ final class StudyGraphView: UIView {
                 
                 for (i, value) in data.enumerated() {
                         let freq = frequencies[i]
-                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
+                        guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
                         let normalizedValue = (value - minDB) / (maxDB - minDB)
@@ -582,7 +578,7 @@ final class StudyGraphView: UIView {
                 let freqLines = calculateFrequencyGridLines()
                 
                 for (freq, label) in freqLines {
-                        guard freq >= currentMinFreq, freq <= currentMaxFreq else { continue }
+                        guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: CGRect(x: 0, y: 0,
                                                                  width: rect.width - padding,
@@ -603,17 +599,18 @@ final class StudyGraphView: UIView {
         }
         
         private func calculateFrequencyGridLines() -> [(freq: Float, label: String)] {
-                let range = currentMaxFreq - currentMinFreq
-                let logRange = log10(Double(currentMaxFreq / currentMinFreq))
+                let range = store.currentMaxFreq - store.currentMinFreq
+                let logRange = log10(store.currentMaxFreq / store.currentMinFreq)
                 
                 var lines: [(Float, String)] = []
                 
                 if logRange < 0.5 {
                         // Very narrow range - use linear spacing
-                        let step = calculateNiceStep(range, targetCount: 5)
-                        var freq = ceil(currentMinFreq / step) * step
+                        let step = calculateNiceStep(Float(range), targetCount: 5)
+                        var freq = ceil(Float(store.currentMinFreq) / step) * step
                         
-                        while freq <= currentMaxFreq {
+                        while freq <= Float(store.currentMaxFreq)
+                        {
                                 if zoomState == .targetFundamental {
                                         // Show as cents relative to target
                                         let target = Float(store.targetNote.frequency(concertA: store.concertPitch))
@@ -627,12 +624,12 @@ final class StudyGraphView: UIView {
                 } else {
                         // Wide range - use logarithmic spacing
                         let decades = [1, 2, 5]
-                        var magnitude = pow(10, floor(log10(Double(currentMinFreq))))
+                        var magnitude = pow(10, floor(log10(Double(store.currentMinFreq))))
                         
-                        while magnitude <= Double(currentMaxFreq) * 10 {
+                        while magnitude <= Double(store.currentMaxFreq) * 10 {
                                 for factor in decades {
                                         let freq = Float(magnitude * Double(factor))
-                                        if freq >= currentMinFreq && freq <= currentMaxFreq {
+                                        if freq >= Float(store.currentMinFreq) && freq <= Float(store.currentMaxFreq) {
                                                 lines.append((freq, formatFrequency(freq)))
                                         }
                                 }

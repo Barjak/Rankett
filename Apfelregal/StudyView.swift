@@ -449,13 +449,41 @@ final class StudyGraphView: UIView {
                 let path = CGMutablePath()
                 var started = false
                 
+                // Convert spectrum to dB scale
+                // MUSIC pseudospectrum is a power measure, so use 10*log10
+                // Add a small epsilon to avoid log(0)
+                let epsilon: Float = 1e-10
+                let spectrumDB = spectrum.map { 10.0 * log10(max($0, epsilon)) }
+                
+                // Find the actual min/max in the dB spectrum for better scaling
+                let actualMinDB = spectrumDB.min() ?? -60.0
+                let actualMaxDB = spectrumDB.max() ?? 0.0
+                
+                // You can either use the actual range or fixed bounds
+                // Option 1: Use actual range with some padding
+                let dbPadding: Float = 10.0
+                let displayMinDB = actualMinDB - dbPadding
+                let displayMaxDB = actualMaxDB + dbPadding
+                
+                // Option 2: Use fixed bounds (uncomment if preferred)
+                // let displayMinDB: Float = -60.0  // or use self.minDB if it's a property
+                // let displayMaxDB: Float = 60.0   // or use self.maxDB if it's a property
+                
                 for (i, freq) in frequencies.enumerated() {
-                        // MUSIC frequencies are only valid in ±50 cents range
+                        // MUSIC frequencies are only valid in the specified range
                         guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (15.0 * spectrum[i] - minDB) / (maxDB - minDB)
-                        let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
+                        
+                        // Normalize the dB value to [0, 1] range for display
+                        let dbValue = spectrumDB[i]
+                        let normalizedValue = (dbValue - displayMinDB) / (displayMaxDB - displayMinDB)
+                        
+                        // Clamp to [0, 1] to handle any outliers
+                        let clampedValue = max(0.0, min(1.0, normalizedValue))
+                        
+                        // Map to y-coordinate (invert since y=0 is at top)
+                        let y = rect.height * (1.0 - CGFloat(clampedValue))
                         
                         if started {
                                 path.addLine(to: CGPoint(x: x, y: y))
@@ -467,6 +495,42 @@ final class StudyGraphView: UIView {
                 
                 ctx.addPath(path)
                 ctx.strokePath()
+                
+                // Optional: Draw dB scale labels
+                drawDBScaleLabels(ctx: ctx, rect: rect, minDB: displayMinDB, maxDB: displayMaxDB)
+        }
+        
+        // Optional helper function to draw dB scale labels
+        private func drawDBScaleLabels(ctx: CGContext, rect: CGRect, minDB: Float, maxDB: Float) {
+                let labelFont = UIFont.systemFont(ofSize: 10)
+                let attributes: [NSAttributedString.Key: Any] = [
+                        .font: labelFont,
+                        .foregroundColor: UIColor.gray
+                ]
+                
+                // Draw a few dB reference lines and labels
+                let dbSteps: [Float] = [-60, -40, -20, 0, 20, 40, 60].filter { $0 >= minDB && $0 <= maxDB }
+                
+                for db in dbSteps {
+                        let normalizedValue = (db - minDB) / (maxDB - minDB)
+                        let y = rect.height * (1.0 - CGFloat(normalizedValue))
+                        
+                        // Draw horizontal grid line
+                        ctx.setStrokeColor(UIColor.gray.withAlphaComponent(0.2).cgColor)
+                        ctx.setLineWidth(0.5)
+                        ctx.move(to: CGPoint(x: rect.minX, y: y))
+                        ctx.addLine(to: CGPoint(x: rect.maxX, y: y))
+                        ctx.strokePath()
+                        
+                        // Draw label
+                        let label = "\(Int(db)) dB"
+                        let size = label.size(withAttributes: attributes)
+                        let labelRect = CGRect(x: rect.minX - size.width - 5,
+                                               y: y - size.height/2,
+                                               width: size.width,
+                                               height: size.height)
+                        label.draw(in: labelRect, withAttributes: attributes)
+                }
         }
         
         private func drawMUSICPeak(ctx: CGContext, frequency: Float, in rect: CGRect) {

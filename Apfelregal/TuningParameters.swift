@@ -87,7 +87,7 @@ struct Instrument: Identifiable, Equatable {
 
         
         // fftSize is a constant 8192 (immutable)
-        let fftSize: Int = 2048
+        let fftSize: Int = 2048 * 4
         let hopSize: Int = 512
 
         

@@ -395,10 +395,12 @@ final class StudyGraphView: UIView {
                         }
                         
                         // Draw MUSIC frequency estimates
-                        for peakFreq in peaks {
-                                if peakFreq >= Float(store.currentMinFreq) && peakFreq <= Float(store.currentMaxFreq) {
-                                        drawMUSICPeak(ctx: ctx, frequency: peakFreq, in: drawRect)
-                                }
+                        let topPeaks = peaks
+                                .filter { $0 >= Float(store.currentMinFreq) && $0 <= Float(store.currentMaxFreq) }
+                                .prefix(1)
+                        
+                        for peakFreq in topPeaks {
+                                drawMUSICPeak(ctx: ctx, frequency: peakFreq, in: drawRect)
                         }
                 } else {
                         // Draw regular plots (0-3)
@@ -452,7 +454,7 @@ final class StudyGraphView: UIView {
                         guard freq >= Float(store.currentMinFreq), freq <= Float(store.currentMaxFreq) else { continue }
                         
                         let x = mapFrequencyToX(freq, in: rect)
-                        let normalizedValue = (2.0 * spectrum[i] - minDB) / (maxDB - minDB)
+                        let normalizedValue = (15.0 * spectrum[i] - minDB) / (maxDB - minDB)
                         let y = rect.height * 1.0 * (1 - CGFloat(normalizedValue))
                         
                         if started {
@@ -489,7 +491,7 @@ final class StudyGraphView: UIView {
                         .backgroundColor: UIColor.black.withAlphaComponent(0.7)
                 ]
                 
-                let label = String(format: "%.1f Hz", frequency)
+                let label = String(format: "%.3f Hz", frequency)
                 let labelSize = label.size(withAttributes: attributes)
                 
                 // Position label to avoid overlap

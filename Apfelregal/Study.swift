@@ -517,8 +517,8 @@ final class Study: ObservableObject {
         private let hpsProcessor: HPSProcessor
         private let noiseFloorEstimator: NoiseFloorEstimator
         private var musicProcessor: MUSIC?
-        private let musicSourceCount = 2
-        private let musicSubarrayLength = 40
+        private let musicSourceCount = 30
+        private let musicSubarrayLength = 80
         
         private let denoisedBuffer: UnsafeMutablePointer<Float>
         private let qrResultBuffer: UnsafeMutablePointer<Float>

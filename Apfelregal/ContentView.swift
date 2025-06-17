@@ -44,7 +44,6 @@ struct ContentView: View {
         @StateObject private var store = TuningParameterStore()
         
         // ─────────── Analysis Engine ───────────
-        @StateObject private var audioProcessor: AudioProcessor
         @StateObject private var study: Study
         
         // ─────────── Connection State ───────────
@@ -59,11 +58,8 @@ struct ContentView: View {
                 let store = TuningParameterStore()
                 _store = StateObject(wrappedValue: store)
                 
-                let audioProcessor = AudioProcessor(store: store)
-                _audioProcessor = StateObject(wrappedValue: audioProcessor)
-                
                 _study = StateObject(
-                        wrappedValue: Study(audioProcessor: audioProcessor, store: store)
+                        wrappedValue: Study( store: store)
                 )
         }
         
@@ -128,7 +124,6 @@ struct ContentView: View {
         
         // ─────────── Engine Control Helpers ───────────
         private func startProcessing() {
-                audioProcessor.start()
                 study.start()
                 
                 // Start sending data to watch
@@ -138,7 +133,6 @@ struct ContentView: View {
         }
         
         private func stopProcessing() {
-                audioProcessor.stop()
                 study.stop()
                 
                 // Stop sending data
@@ -156,7 +150,7 @@ struct ContentView: View {
                         guard case .connected = self.connectionState else { return }
                         
                         // Send current data
-                        let data = [self.study.targetHPSFundamental]
+                        let data = [Float(0.0)]
                         PhoneConnectionManager.shared.sendData(data, guaranteed: false)
                 }
         }

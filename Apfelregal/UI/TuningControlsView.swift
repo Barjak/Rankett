@@ -18,8 +18,8 @@ struct TuningControlsView: View {
         var body: some View {
                 VStack(spacing: 12) {
                         // Carousel Pitch Display
-                        CarouselPitchDisplay(centsError: Double(self.study.targetHPSFundamental - self.store.targetFrequency()))
-                                .frame(height: 60)
+//                        CarouselPitchDisplay(centsError: Double(self.study.targetHPSFundamental - self.store.targetFrequency()))
+//                                .frame(height: 60)
                         
                         // Numerical Pitch Display
                         NumericalPitchDisplayRow(

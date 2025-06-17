@@ -1,7 +1,117 @@
-import Foundation
 import AVFoundation
+import Foundation
+import Accelerate
 
-// MARK: - Audio Processor
+final class CircularBuffer {
+        private let buffer: UnsafeMutableBufferPointer<Float>
+        private let capacity: Int
+        
+        // Use atomic properties instead of locks
+        private var writeIndex = AtomicInt(0)
+        private var totalWritten = AtomicInt(0)
+        
+        init(capacity: Int) {
+                self.capacity = capacity
+                let ptr = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
+                self.buffer = UnsafeMutableBufferPointer(start: ptr, count: capacity)
+                buffer.initialize(repeating: 0)
+        }
+        
+        deinit {
+                buffer.deallocate()
+        }
+        
+        func write(_ samples: UnsafePointer<Float>, count: Int) {
+                let currentWriteIndex = writeIndex.load()
+                let ptr = buffer.baseAddress!
+                var samplesRemaining = count
+                var sourceOffset = 0
+                var localWriteIndex = currentWriteIndex
+                
+                // Write in chunks, wrapping around as needed
+                while samplesRemaining > 0 {
+                        let chunkSize = min(samplesRemaining, capacity - localWriteIndex)
+                        memcpy(ptr.advanced(by: localWriteIndex),
+                               samples.advanced(by: sourceOffset),
+                               chunkSize * MemoryLayout<Float>.size)
+                        
+                        localWriteIndex = (localWriteIndex + chunkSize) % capacity
+                        sourceOffset += chunkSize
+                        samplesRemaining -= chunkSize
+                }
+                
+                // Update indices atomically
+                writeIndex.store(localWriteIndex)
+                totalWritten.add(count)
+        }
+        
+        /// Get the latest `size` samples
+        func getLatest(size: Int, to destination: UnsafeMutablePointer<Float>) -> Bool {
+                // Make sure we've written at least `size` samples total
+                guard totalWritten.load() >= size else {
+                        // Not enough data yet - fill with zeros
+                        for i in 0..<size {
+                                destination[i] = 0
+                        }
+                        return false
+                }
+                
+                let currentWriteIndex = writeIndex.load()
+                let ptr = buffer.baseAddress!
+                
+                // Calculate where to start reading to get the latest `size` samples
+                let readStart = (currentWriteIndex - size + capacity) % capacity
+                
+                // Read in up to two chunks
+                let firstChunkSize = min(size, capacity - readStart)
+                memcpy(destination, ptr.advanced(by: readStart), firstChunkSize * MemoryLayout<Float>.size)
+                
+                if size > firstChunkSize {
+                        let secondChunkSize = size - firstChunkSize
+                        memcpy(destination.advanced(by: firstChunkSize), ptr, secondChunkSize * MemoryLayout<Float>.size)
+                }
+                
+                return true
+        }
+        
+        /// Check if we have at least `size` samples
+        func hasEnoughData(size: Int) -> Bool {
+                return totalWritten.load() >= size
+        }
+}
+
+// Simple atomic integer wrapper
+final class AtomicInt {
+        private let value: UnsafeMutablePointer<Int32>
+        
+        init(_ initialValue: Int) {
+                value = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+                value.initialize(to: Int32(initialValue))
+        }
+        
+        deinit {
+                value.deallocate()
+        }
+        
+        func load() -> Int {
+                return Int(OSAtomicAdd32(0, value))
+        }
+        
+        func store(_ newValue: Int) {
+                while true {
+                        let current = load()
+                        if OSAtomicCompareAndSwap32(Int32(current), Int32(newValue), value) {
+                                break
+                        }
+                }
+        }
+        
+        func add(_ delta: Int) -> Int {
+                return Int(OSAtomicAdd32(Int32(delta), value))
+        }
+}
+
+// MARK: - Audio Processor (minimal changes)
 final class AudioProcessor: ObservableObject {
         let store: TuningParameterStore
         private let circularBuffer: CircularBuffer
@@ -9,8 +119,8 @@ final class AudioProcessor: ObservableObject {
         // Audio engine
         private let engine = AVAudioEngine()
         
-        // Thread safety
-        private let bufferLock = NSLock()
+        // Remove the lock - no longer needed
+        // private let bufferLock = NSLock()
         
         // Published state
         @Published var isRunning = false
@@ -23,7 +133,6 @@ final class AudioProcessor: ObservableObject {
         
         private func configureAudioSession() {
                 do {
-                        // Changed to .record for microphone input
                         try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement)
                         try AVAudioSession.sharedInstance().setActive(true)
                         store.audioSampleRate = AVAudioSession.sharedInstance().sampleRate
@@ -33,13 +142,12 @@ final class AudioProcessor: ObservableObject {
         }
         
         func start() {
-
                 engine.inputNode.removeTap(onBus: 0)
                 
                 if engine.isRunning {
                         engine.stop()
                 }
-
+                
                 let format = engine.inputNode.outputFormat(forBus: 0)
                 
                 // Install tap - using the same buffer size and handling
@@ -58,8 +166,7 @@ final class AudioProcessor: ObservableObject {
         }
         
         func stop() {
-                // playerNode.stop() // Commented out
-                engine.inputNode.removeTap(onBus: 0) // Changed from mainMixerNode to inputNode
+                engine.inputNode.removeTap(onBus: 0)
                 engine.stop()
                 isRunning = false
         }
@@ -68,31 +175,27 @@ final class AudioProcessor: ObservableObject {
                 guard let channelData = buffer.floatChannelData?[0] else { return }
                 let frameLength = Int(buffer.frameLength)
                 
-                bufferLock.lock()
+                // No lock needed - write is atomic
                 circularBuffer.write(channelData, count: frameLength)
-                bufferLock.unlock()
         }
         
         // MARK: - Public Data Access
         
         func getWindow(size: Int) -> [Float]? {
-                bufferLock.lock()
-                defer { bufferLock.unlock() }
-                
+                // No lock needed
                 guard circularBuffer.hasEnoughData(size: size) else { return nil }
                 
                 let window = UnsafeMutablePointer<Float>.allocate(capacity: size)
                 defer { window.deallocate() }
                 
                 let success = circularBuffer.getLatest(size: size, to: window)
-                guard success else { return nil }  // Check success!
+                guard success else { return nil }
                 
                 return Array(UnsafeBufferPointer(start: window, count: size))
         }
         
         func hasWindow(size: Int) -> Bool {
-                bufferLock.lock()
-                defer { bufferLock.unlock() }
+                // No lock needed
                 return circularBuffer.hasEnoughData(size: size)
         }
 }

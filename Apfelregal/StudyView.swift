@@ -1,4 +1,4 @@
-// New file - Updated
+// New version with Original Spectrum added
 
 import SwiftUI
 import Charts
@@ -22,8 +22,18 @@ struct PLLBar: Identifiable {
 class PLLVisualizationState: ObservableObject {
         @Published var smoothedBars: [PLLBar] = []
         @Published var smoothingFactor: Double = 0.85
+        @Published var originalSpectrum: Plot?
         
         private var barHistory: [String: (frequency: Float, amplitude: Float)] = [:]
+        
+        init() {
+                // Initialize original spectrum plot
+                originalSpectrum = Plot(
+                        color: UIColor.systemBlue.withAlphaComponent(0.5),
+                        name: "Original",
+                        lineWidth: 0.8
+                )
+        }
         
         func update(from estimates: [Int: [PartialEstimate]]) {
                 var newBars: [PLLBar] = []
@@ -54,6 +64,28 @@ class PLLVisualizationState: ObservableObject {
                 
                 // Sort by frequency for stable rendering
                 smoothedBars = newBars.sorted { $0.frequency < $1.frequency }
+        }
+        
+        func updateSpectrum(amplitudes: [Float], frequencies: [Float]) {
+                guard var spectrum = originalSpectrum,
+                      amplitudes.count == frequencies.count,
+                      !amplitudes.isEmpty else { return }
+                
+                
+                // Store the new target data
+                spectrum.target = amplitudes
+                spectrum.frequencies = frequencies
+                
+                // Initialize current if empty
+                if spectrum.current.isEmpty {
+                        spectrum.current = spectrum.target
+                }
+                
+                // Apply smoothing
+                spectrum.smooth(Float(smoothingFactor))
+                
+                // Update the published property
+                originalSpectrum = spectrum
         }
         
         private func smoothValues(id: String, frequency: Float, amplitude: Float) -> (Float, Float) {
@@ -150,6 +182,7 @@ struct GraphView: View {
                                 }
                         }
                         .onAppear {
+                                study.start()
                                 startUpdating()
                         }
                         .onLongPressGesture(minimumDuration: 0.5) {
@@ -173,12 +206,57 @@ struct GraphView: View {
                         // Draw grid
                         drawGrid(context: context, size: canvasSize)
                         
+                        // Draw original spectrum (behind PLL bars)
+                        drawOriginalSpectrum(context: context, size: canvasSize)
+                        
                         // Draw PLL bars
                         drawPLLBars(context: context, size: canvasSize)
                         
                         // Draw axes
                         drawAxes(context: context, size: canvasSize)
                 }
+        }
+        
+        private func drawOriginalSpectrum(context: GraphicsContext, size: CGSize) {
+                guard let spectrum = pllState.originalSpectrum,
+                      !spectrum.current.isEmpty,
+                      spectrum.current.count == spectrum.frequencies.count else { return }
+                
+                let freqRange = frequencyRange
+                let minDB: Float = -80
+                let maxDB: Float = 180
+                
+                var path = Path()
+                var started = false
+                
+                for (i, amplitude) in spectrum.current.enumerated() {
+                        let freq = spectrum.frequencies[i]
+                        
+                        // Skip frequencies outside visible range
+                        guard Double(freq) >= freqRange.lowerBound &&
+                                Double(freq) <= freqRange.upperBound else { continue }
+                        
+                        // Calculate x position
+                        let x = frequencyToX(Double(freq), size: size.width)
+                        
+                        // Calculate y position (amplitude in dB)
+                        let normalizedValue = (amplitude - minDB) / (maxDB - minDB)
+                        let y = size.height * (1 - CGFloat(normalizedValue))
+                        
+                        if started {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                                path.move(to: CGPoint(x: x, y: y))
+                                started = true
+                        }
+                }
+                
+                // Draw the spectrum line
+                context.stroke(
+                        path,
+                        with: .color(Color(spectrum.color)),
+                        lineWidth: CGFloat(spectrum.lineWidth)
+                )
         }
         
         private func drawPLLBars(context: GraphicsContext, size: CGSize) {
@@ -332,9 +410,20 @@ struct GraphView: View {
         
         private func legendView() -> some View {
                 VStack(alignment: .leading, spacing: 4) {
+                        // Original spectrum legend
+                        HStack(spacing: 4) {
+                                Rectangle()
+                                        .fill(Color.blue.opacity(0.5))
+                                        .frame(width: 20, height: 2)
+                                Text("Original Spectrum")
+                                        .font(.caption2)
+                                        .foregroundColor(.white)
+                        }
+                        
                         Text("PLL Lock Strength")
                                 .font(.caption)
                                 .foregroundColor(.white)
+                                .padding(.top, 4)
                         
                         HStack(spacing: 2) {
                                 ForEach(0..<10) { i in
@@ -404,7 +493,38 @@ struct GraphView: View {
         
         private func startUpdating() {
                 Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { _ in
+                        // Update PLL bars
+                        print("🎨 Current PLL estimates: \(study.currentPLLEstimates.count)")
+
                         pllState.update(from: study.currentPLLEstimates)
+                        
+                        if !study.targetOriginalSpectrum.isEmpty {
+                                print("🎨 Updating spectrum with \(study.targetOriginalSpectrum.count) points")
+                        }
+                        
+                        // Update spectrum if available
+                        if let binMapper = study.binMapper,
+                           !study.targetOriginalSpectrum.isEmpty,
+                           study.targetOriginalSpectrum.count == study.targetFrequencies.count {
+                                
+                                // Map the full spectrum to display bins
+                                let mappedSpectrum = binMapper.mapSpectrum(study.targetOriginalSpectrum)
+                                
+                                // Update the visualization state with mapped spectrum
+                                pllState.updateSpectrum(
+                                        amplitudes: mappedSpectrum,
+                                        frequencies: binMapper.binFrequencies
+                                )
+                        } else {
+                                // If no binMapper, use raw spectrum data
+                                if !study.targetOriginalSpectrum.isEmpty &&
+                                        study.targetOriginalSpectrum.count == study.targetFrequencies.count {
+                                        pllState.updateSpectrum(
+                                                amplitudes: study.targetOriginalSpectrum,
+                                                frequencies: study.targetFrequencies
+                                        )
+                                }
+                        }
                 }
         }
 }
@@ -475,10 +595,11 @@ struct StudyView: View {
         }
 }
 
-// MARK: - Simple Plot Data Structure
+// MARK: - Simple Plot Data Structure (Enhanced)
 struct Plot {
         var current: [Float] = []
         var target: [Float] = []
+        var frequencies: [Float] = []  // Added to store frequency values
         let color: UIColor
         let name: String
         let lineWidth: CGFloat

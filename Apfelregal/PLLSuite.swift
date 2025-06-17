@@ -151,8 +151,6 @@ public func subtractSignal(input: [Complex], tone: [Complex]) -> [Complex] {
         return output
 }
 
-// MARK: - Sequential Tracking System
-
 public class OrganPipeTracker {
         private let sampleRate: Float
         private var partialEstimates: [PartialEstimate] = []
@@ -178,6 +176,9 @@ public class OrganPipeTracker {
                 let centSpread: Float = 0.5
                 let freqRatio = pow(2.0, centSpread / 1200.0)
                 
+                var attemptCount = 0
+                var lockCount = 0
+                
                 for peakIndex in 0..<nPeaks {
                         // Calculate initial frequency with offset
                         let offset = Float(peakIndex - nPeaks/2) * (freqRatio - 1.0)
@@ -186,6 +187,8 @@ public class OrganPipeTracker {
                         // Skip if outside bounds
                         if let minF = minFreq, initialFreq < minF { continue }
                         if let maxF = maxFreq, initialFreq > maxF { continue }
+                        
+                        attemptCount += 1
                         
                         // Create PLL
                         let pll = ComplexPLL(initialFreq: initialFreq, sampleRate: sampleRate)
@@ -209,6 +212,8 @@ public class OrganPipeTracker {
                                 }
                                 
                                 if !isDegenerate {
+                                        lockCount += 1
+                                        
                                         // Synthesize and subtract
                                         let synthesized = synthesizeTone(
                                                 freq: freq,
@@ -300,6 +305,9 @@ public class OrganTunerModule {
                 let minFreq = Float(store.currentMinFreq)
                 let maxFreq = Float(store.currentMaxFreq)
                 
+                var totalLocks = 0
+                var locksByPartial: [(Int, Int)] = [] // (partialIndex, lockCount)
+                
                 for partialIndex in partialIndices {
                         let partialFreq = targetPitch * Float(partialIndex)
                         
@@ -319,10 +327,32 @@ public class OrganTunerModule {
                         let estimates = trackers[partialIndex]!.sequentialTrack(
                                 input: complexInput,
                                 targetFreq: partialFreq,
-                                nPeaks: expectedPeaks
+                                nPeaks: expectedPeaks,
+                                minFreq: minFreq,
+                                maxFreq: maxFreq
                         )
                         
                         results[partialIndex] = estimates
+                        
+                        let activeLocks = estimates.filter { $0.lockStrength > 0.8 }.count
+                        if activeLocks > 0 {
+                                totalLocks += activeLocks
+                                locksByPartial.append((partialIndex, activeLocks))
+                        }
+                }
+                
+                // Debug output
+                if totalLocks == 0 {
+                        print("🔍 No PLL locks found for pitch \(targetPitch) Hz")
+                } else {
+                        print("✅ PLL locks: \(totalLocks) total")
+                        for (partial, count) in locksByPartial.prefix(3) {
+                                let freq = targetPitch * Float(partial)
+                                print("   Partial \(partial) (\(String(format: "%.1f", freq)) Hz): \(count) locks")
+                        }
+                        if locksByPartial.count > 3 {
+                                print("   ... and \(locksByPartial.count - 3) more partials")
+                        }
                 }
                 
                 return results

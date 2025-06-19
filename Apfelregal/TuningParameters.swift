@@ -54,14 +54,13 @@ struct Instrument: Identifiable, Equatable {
 
 // MARK: – TuningParameterStore (now contains everything from AnalyzerConfig + your tuning params)
 
-        class TuningParameterStore: ObservableObject {
-                @Published var audioSampleRate: Double = 44_100
-
+class TuningParameterStore: ObservableObject {
+        @Published var audioSampleRate: Double = 44_100
+        
         @Published var concertPitch: Double = 440.0
         @Published var targetNote: Note = Note(name: "a1")
         @Published var targetPartial: Int = 1
         
-
         @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
         
         @Published var temperament: Temperament = .equal
@@ -84,14 +83,11 @@ struct Instrument: Identifiable, Equatable {
         // Nyquist is derived automatically
         var nyquistFrequency: Double { audioSampleRate * 0.5 }
         
-
-        
         // fftSize is a constant 8192 (immutable)
         let fftSize: Int = 2048 * 4
         let hopSize: Int = 512
-
         
-        // outputBinCount was 512 (we keep it @Published so it’s adjustable if you want):
+
         @Published var downscaleBinCount: Int = 512
         
         // Derived values:
@@ -101,9 +97,6 @@ struct Instrument: Identifiable, Equatable {
         var circularBufferSize: Int {
                 fftSize * 3
         }
-        
-        
-        // targetFPS is fixed at 60 (unpublished)
         let renderingTargetFPS: Double = 60
         var frameInterval: TimeInterval {
                 1.0 / renderingTargetFPS
@@ -118,21 +111,23 @@ struct Instrument: Identifiable, Equatable {
         @Published var resolutionMUSIC: Double = 200
         @Published var currentMinFreq: Double = 20
         @Published var currentMaxFreq: Double = 20_000
-                
-        let noiseFloorMaxIterations = 10
-        let noiseFloorConvergenceThreshold: Float = 1e-4
-        @Published var noiseFloorBandwidthSemitones: Float = 5.0
-        @Published var noiseFloorAlpha: Float = 1.0 // Smooth between frames
-
         
-        @Published var noiseMethod: NoiseFloorMethod = .quantileRegression
-        @Published var noiseThresholdOffset: Float = 10.0
-        @Published var noiseQuantile: Float = 0.02
-        @Published var noiseFloorLambda: Float = 0.7
         
+        let currentMinDB = -180.0
+        let currentMaxDB = 20.0
 
         func targetFrequency() -> Float {
                 return Float(targetNote.frequency(concertA: concertPitch))
+        }
+        
+        
+        let anfWindowSizeCents: Double = 100.0
+        func anfFrequencyWindow() -> (Double, Double) {
+                let halfWindow: Double = anfWindowSizeCents / 2.0
+                let center = Double(targetFrequency())
+                let lower: Double = center * pow(2, -halfWindow/1200.0)
+                let upper: Double = center * pow(2, halfWindow/1200.0)
+                return (lower, upper)
         }
         
         func zoomCenterFrequencies(totalWindowCents: Float = 100.0) -> (lower: Double, upper: Double) {
@@ -141,6 +136,6 @@ struct Instrument: Identifiable, Equatable {
                                                                          totalWindowCents: totalWindowCents)
                 return (Double(lowerF), Double(upperF))
         }
-        
+
         static let `default` = TuningParameterStore()
 }

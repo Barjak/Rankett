@@ -3,52 +3,103 @@ import SwiftUICore
 import Accelerate
 import CoreML
 
-// MARK: - Simple Butterworth Bandpass Filter
 final class ButterworthBandpassFilter {
         private let coefficients: FilterCoefficients
         private var state: FilterState
         
         struct FilterCoefficients {
-                let b: [Float]  // Numerator coefficients
-                let a: [Float]  // Denominator coefficients
+                let b0, b1, b2: Float
+                let a1, a2: Float  // a0 is normalized to 1.0
         }
         
         struct FilterState {
-                var x: [Float]  // Input history
-                var y: [Float]  // Output history
+                var d1: Float = 0.0
+                var d2: Float = 0.0
         }
         
-        init(sampleRate: Double, lowFreq: Double, highFreq: Double, order: Int) {
-                // Design Butterworth bandpass filter
-                // This is simplified - in practice you'd use a proper filter design algorithm
-                let nyquist = sampleRate / 2.0
-                let lowNorm = lowFreq / nyquist
-                let highNorm = highFreq / nyquist
+        init(sampleRate: Double, lowFreq: Double, highFreq: Double) {
+                // Pre-warp frequencies for bilinear transform
+                let fs = sampleRate
+                let wl = 2.0 * Double.pi * lowFreq / fs
+                let wh = 2.0 * Double.pi * highFreq / fs
                 
-                // For now, simple 2nd order sections
-                // In production, use vDSP or Accelerate filter design functions
+                // Pre-warped frequencies
+                let warpedLow = 2.0 * fs * tan(wl / 2.0)
+                let warpedHigh = 2.0 * fs * tan(wh / 2.0)
+                
+                // Bandwidth and center frequency in warped domain
+                let bw = warpedHigh - warpedLow
+                let w0 = sqrt(warpedLow * warpedHigh)
+                
+                // For a 2nd-order Butterworth bandpass:
+                // The analog prototype has a single complex pole pair at s = -1/√2 ± j/√2
+                // For bandpass, we use the lowpass-to-bandpass transformation
+                
+                // Q factor for 2nd-order Butterworth is 1/√2
+                let Q = w0 / bw
+                
+                // Analog bandpass transfer function coefficients
+                // H(s) = (s/Q) / (s² + s/Q + 1) after normalization
+                
+                // Apply bilinear transform s = 2*fs*(z-1)/(z+1)
+                // After substitution and simplification:
+                let K = 2.0 * fs
+                let K2 = K * K
+                let w02 = w0 * w0
+                let norm = K2 + K * w0 / Q + w02
+                
+                // Digital filter coefficients
+                let b0 = Float((K * w0 / Q) / norm)
+                let b1 = Float(0.0)  // Bandpass has zero at DC and Nyquist
+                let b2 = Float(-b0)
+                let a1 = Float((2.0 * (w02 - K2)) / norm)
+                let a2 = Float((K2 - K * w0 / Q + w02) / norm)
+                
                 self.coefficients = FilterCoefficients(
-                        b: [0.1, 0.0, -0.1],
-                        a: [1.0, -1.8, 0.81]
+                        b0: b0, b1: b1, b2: b2,
+                        a1: a1, a2: a2
                 )
                 
-                self.state = FilterState(
-                        x: [Float](repeating: 0, count: coefficients.b.count),
-                        y: [Float](repeating: 0, count: coefficients.a.count)
-                )
+                self.state = FilterState()
         }
         
         func process(_ input: [Float]) -> [Float] {
-                // For now, just pass through the audio unfiltered
-                // TODO: Implement proper Butterworth filter design
-                return input
+                var output = [Float](repeating: 0, count: input.count)
+                
+                for i in 0..<input.count {
+                        output[i] = processSample(input[i])
+                }
+                
+                return output
+        }
+        
+        func processSample(_ x: Float) -> Float {
+                // Transposed Direct Form II
+                // y = b0*x + d1
+                let y = coefficients.b0 * x + state.d1
+                
+                // Update delay states
+                // d1_new = b1*x - a1*y + d2
+                // d2_new = b2*x - a2*y
+                let d1New = coefficients.b1 * x - coefficients.a1 * y + state.d2
+                let d2New = coefficients.b2 * x - coefficients.a2 * y
+                
+                state.d1 = d1New
+                state.d2 = d2New
+                
+                return y
+        }
+        
+        func reset() {
+                state.d1 = 0.0
+                state.d2 = 0.0
         }
 }
 
 
 
 // MARK: - Filtered Circular Buffer (Redesigned)
-final class FilteredCircularBuffer {
+class FilteredCircularBuffer {
         private let capacity: Int
         private let buffer: UnsafeMutableBufferPointer<Float>
         private var writeIndex = 0
@@ -56,16 +107,19 @@ final class FilteredCircularBuffer {
         private let lock = NSLock()
         
         // Reference to audio processor
-        private weak var audioProcessor: AudioProcessor?
+        weak var audioProcessor: AudioProcessor?
         
         // Tracking position in source
         private var lastReadPosition = 0
+        
+        // Position tracking for continuous reads (PLL)
+        private var continuousReadPosition = 0
         
         // Filter state
         private var filter: ButterworthBandpassFilter?
         private var cachedMinFreq: Double = 0
         private var cachedMaxFreq: Double = 0
-        private let sampleRate: Double
+        let sampleRate: Double
         
         init(capacity: Int, sampleRate: Double, audioProcessor: AudioProcessor) {
                 self.capacity = capacity
@@ -97,7 +151,6 @@ final class FilteredCircularBuffer {
                         sampleRate: sampleRate,
                         lowFreq: minFreq,
                         highFreq: maxFreq,
-                        order: 4
                 )
                 
                 // Refilter from raw source if requested
@@ -123,13 +176,103 @@ final class FilteredCircularBuffer {
                 lastReadPosition = newPosition
                 
                 // Apply filter to new samples
-                let filtered = filter.process(newSamples)
+                let filtered = newSamples//filter.process(newSamples)
                 
                 // Write filtered samples to our buffer
                 writeSamples(filtered)
         }
         
-        /// Get latest filtered samples
+        /// Get continuous samples since last read position (for PLL)
+        /// Returns nil if buffer has overflowed (lost samples)
+        func getContinuousSamples() -> [Float]? {
+                lock.lock()
+                defer { lock.unlock() }
+                
+                // Check if we've lost samples due to buffer overflow
+                if totalWritten - continuousReadPosition > capacity {
+                        // Buffer overflowed - reset position to current write position
+                        // This allows PLL to re-acquire phase naturally
+                        continuousReadPosition = totalWritten
+                        return nil
+                }
+                
+                // No new samples
+                if continuousReadPosition >= totalWritten {
+                        return []
+                }
+                
+                // Calculate how many samples to return
+                let samplesAvailable = totalWritten - continuousReadPosition
+                let samplesToReturn = min(samplesAvailable, capacity)
+                
+                // Calculate read position in circular buffer
+                let readStart = (writeIndex - (totalWritten - continuousReadPosition) + capacity) % capacity
+                
+                // Read samples
+                var samples = [Float](repeating: 0, count: samplesToReturn)
+                
+                // Read in up to two chunks (handling wrap-around)
+                let firstChunkSize = min(samplesToReturn, capacity - readStart)
+                for i in 0..<firstChunkSize {
+                        samples[i] = buffer[readStart + i]
+                }
+                
+                if samplesToReturn > firstChunkSize {
+                        let secondChunkSize = samplesToReturn - firstChunkSize
+                        for i in 0..<secondChunkSize {
+                                samples[firstChunkSize + i] = buffer[i]
+                        }
+                }
+                
+                // Update continuous read position
+                continuousReadPosition = totalWritten
+                
+                return samples
+        }
+        
+        /// Get samples since a specific position (alternative API)
+        func getSamplesSince(position: Int) -> (samples: [Float], newPosition: Int)? {
+                lock.lock()
+                defer { lock.unlock() }
+                
+                // Check if we've lost samples due to buffer overflow
+                if totalWritten - position > capacity {
+                        // Buffer overflowed - return nil to indicate discontinuity
+                        return nil
+                }
+                
+                // No new samples
+                if position >= totalWritten {
+                        return ([], totalWritten)
+                }
+                
+                // Calculate how many samples to return
+                let samplesAvailable = totalWritten - position
+                let samplesToReturn = min(samplesAvailable, capacity)
+                
+                // Calculate read position in circular buffer
+                let readStart = (writeIndex - (totalWritten - position) + capacity) % capacity
+                
+                // Read samples
+                var samples = [Float](repeating: 0, count: samplesToReturn)
+                
+                // Read in up to two chunks (handling wrap-around)
+                let firstChunkSize = min(samplesToReturn, capacity - readStart)
+                for i in 0..<firstChunkSize {
+                        samples[i] = buffer[readStart + i]
+                }
+                
+                if samplesToReturn > firstChunkSize {
+                        let secondChunkSize = samplesToReturn - firstChunkSize
+                        for i in 0..<secondChunkSize {
+                                samples[firstChunkSize + i] = buffer[i]
+                        }
+                }
+                
+                return (samples, totalWritten)
+        }
+        
+        /// Get latest filtered samples (for FFT - preserves existing behavior)
         func getLatest(size: Int) -> [Float]? {
                 lock.lock()
                 defer { lock.unlock() }
@@ -155,6 +298,20 @@ final class FilteredCircularBuffer {
                 return result
         }
         
+        /// Reset continuous read position (call this when starting PLL processing)
+        func resetContinuousReadPosition() {
+                lock.lock()
+                defer { lock.unlock() }
+                continuousReadPosition = totalWritten
+        }
+        
+        /// Get current position for bookmarking
+        func getCurrentPosition() -> Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return totalWritten
+        }
+        
         /// Refilter entire buffer from raw source
         private func refilterFromSource() {
                 guard let audioProcessor = audioProcessor,
@@ -165,11 +322,12 @@ final class FilteredCircularBuffer {
                 guard !rawSamples.isEmpty else { return }
                 
                 // Apply filter to all samples
-                let filtered = filter.process(rawSamples)
+                let filtered = rawSamples//filter.process(rawSamples)
                 
                 // Reset buffer and write all filtered samples
                 writeIndex = 0
                 totalWritten = 0
+                continuousReadPosition = 0  // Reset continuous read position too
                 writeSamples(filtered)
                 
                 // Update our position to current
@@ -337,36 +495,40 @@ final class FFTProcessor {
                 vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
         }
 }
-
+struct ANFDatum {
+        let freq: Double
+        let amp: Double
+        let bandwidth: Double
+        let convergenceRating: Double
+}
 
 struct StudyResult {
-        let pllEstimates: [Int: [PartialEstimate]]  // Partial index -> frequency estimates
+        let anfData: [ANFDatum]
         let filteredAudio: [Float]                   // Latest filtered audio window
         let filterBandwidth: (min: Double, max: Double)
         let timestamp: Date
         let processingTime: TimeInterval
 }
 
-
-// MARK: - New Study Class
 final class Study: ObservableObject {
         // Core components (owned)
         private let audioProcessor: AudioProcessor
         private let store: TuningParameterStore
         private let filteredBuffer: FilteredCircularBuffer
-        private let organTunerModule: OrganTunerModule
+        private var cascadedANFTracker: CascadedANFTracker
         private let fftProcessor: FFTProcessor
+        private var currentTargetFrequency: Double
         
         // Processing queue
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
         // State
-        private var isRunning = false
-        private let updateRate: Double = 30.0  // Hz
+        var isRunning = false
+        private let updateRate: Double = 60.0  // Hz
         
         // Cached results
         @Published var latestResult: StudyResult?
-        @Published var currentPLLEstimates: [Int: [PartialEstimate]] = [:]
+        @Published var currentANFData: [ANFDatum] = []
         @Published var currentFilteredAudio: [Float] = []
         @Published var isProcessing = false
         
@@ -377,26 +539,30 @@ final class Study: ObservableObject {
         
         init(store: TuningParameterStore) {
                 self.store = store
+                self.currentTargetFrequency = Double(store.targetFrequency())
+                self.currentANFData = []
+                
                 self.audioProcessor = AudioProcessor(store: store)
                 self.filteredBuffer = FilteredCircularBuffer(
                         capacity: store.circularBufferSize,
                         sampleRate: store.audioSampleRate,
-                        audioProcessor: audioProcessor
+                        audioProcessor: self.audioProcessor
                 )
-                self.organTunerModule = OrganTunerModule(
-                        sampleRate: Float(store.audioSampleRate),
-                        store: store
+                
+                // Initialize cascaded ANF tracker
+                self.cascadedANFTracker = CascadedANFTracker(
+                        buffer: self.filteredBuffer,
+                        targetFreq: self.currentTargetFrequency,
+                        frequencyWindow: store.anfFrequencyWindow(),  // Renamed from pllFrequencyWindow
+                        bandwidth: 1.0,  // Hz - configurable
+                        numTrackers: 1   // Number of parallel ANFs
                 )
                 
                 // Initialize FFT processor
                 self.fftProcessor = FFTProcessor(fftSize: store.fftSize)
+                self.fftProcessor.initializeFrequencies(sampleRate: Float(store.audioSampleRate))
                 
-                // Initialize FFT components
-                // Comment out window initialization since we're not using it
-                // fftProcessor.initializeBlackmanHarrisWindow()
-                fftProcessor.initializeFrequencies(sampleRate: Float(store.audioSampleRate))
-                
-                // Initialize BinMapper with correct parameters
+                // Initialize BinMapper
                 self.binMapper = BinMapper(
                         store: store,
                         halfSize: store.fftSize / 2
@@ -406,196 +572,150 @@ final class Study: ObservableObject {
         // MARK: - Start / Stop
         
         func start() {
-                
-                guard !isRunning else { return }
+                guard !self.isRunning else { return }
                 print("▶️ audioProcessor.start() called")
-                filteredBuffer.updateFilter(
-                        minFreq: store.currentMinFreq,
-                        maxFreq: store.currentMaxFreq
-                )
-                // Start audio processor
-                audioProcessor.start()
                 
-                isRunning = true
+                self.filteredBuffer.updateFilter(
+                        minFreq: self.store.currentMinFreq,
+                        maxFreq: self.store.currentMaxFreq
+                )
+                
+                // Start audio processor
+                self.audioProcessor.start()
+                
+                self.isRunning = true
                 
                 // Start processing loop
-                studyQueue.async { [weak self] in
+                self.studyQueue.async { [weak self] in
                         self?.processingLoop()
                 }
         }
         
         func stop() {
-                isRunning = false
-                audioProcessor.stop()
+                self.isRunning = false
+                self.audioProcessor.stop()
         }
         
         // MARK: - Main Processing Loop
         
         private func processingLoop() {
-                while isRunning {
-
+                while self.isRunning {
                         autoreleasepool {
-                                perform()
+                                self.perform()
                         }
-                        Thread.sleep(forTimeInterval: 1.0 / updateRate)
+                        Thread.sleep(forTimeInterval: 1.0 / self.updateRate)
                 }
         }
         
-        // MARK: - Main Analysis Method (Enhanced with FFT)
+        // MARK: - Main Analysis Method
         
         func perform() {
                 DispatchQueue.main.async { [weak self] in
                         self?.isProcessing = true
                 }
+                
                 let startTime = CFAbsoluteTimeGetCurrent()
                 
                 // Update filter based on current frequency range
-                filteredBuffer.updateFilter(
-                        minFreq: store.currentMinFreq,
-                        maxFreq: store.currentMaxFreq
+                self.filteredBuffer.updateFilter(
+                        minFreq: self.store.currentMinFreq,
+                        maxFreq: self.store.currentMaxFreq,
+                        refilter: true
                 )
                 
-                // Update filtered buffer with any new audio
-                filteredBuffer.updateFromAudioProcessor()
+                self.filteredBuffer.updateFromAudioProcessor()
                 
-                // Get filtered audio for processing
-                guard let filteredAudio = filteredBuffer.getLatest(size: store.fftSize) else {
+                // Get latest samples for UI display (not for ANF processing)
+                guard let displaySamples = self.filteredBuffer.getLatest(size: min(4096, self.store.circularBufferSize)) else {
+                        DispatchQueue.main.async { [weak self] in
+                                self?.isProcessing = false
+                        }
+                        return
+                }
+                
+                // Get fixed window for FFT (separate from ANF processing)
+                guard let fftWindow = self.filteredBuffer.getLatest(size: self.store.fftSize) else {
+                        DispatchQueue.main.async { [weak self] in
+                                self?.isProcessing = false
+                        }
                         return // Not enough data yet
                 }
                 
-                // Perform FFT on filtered audio (no windowing)
-                filteredAudio.withUnsafeBufferPointer { audioPtr in
-                        fftProcessor.performFFT(input: audioPtr.baseAddress!, applyWindow: false)
+                // Perform FFT on fixed window (no windowing)
+                fftWindow.withUnsafeBufferPointer { audioPtr in
+                        self.fftProcessor.performFFT(input: audioPtr.baseAddress!, applyWindow: false)
                 }
                 
                 // Convert to dB scale
-                fftProcessor.convertMagnitudesToDB()
+                self.fftProcessor.convertMagnitudesToDB()
                 
                 // Copy FFT results
                 let spectrumData = Array(UnsafeBufferPointer(
-                        start: fftProcessor.magnitudeBuffer,
-                        count: fftProcessor.halfSize
+                        start: self.fftProcessor.magnitudeBuffer,
+                        count: self.fftProcessor.halfSize
                 ))
                 let frequencyData = Array(UnsafeBufferPointer(
-                        start: fftProcessor.frequencyBuffer,
-                        count: fftProcessor.halfSize
+                        start: self.fftProcessor.frequencyBuffer,
+                        count: self.fftProcessor.halfSize
                 ))
                 
-                // Get target frequency and filter bounds
-                let targetFreq = Float(store.targetFrequency())
-                let minFreq = Float(store.currentMinFreq)
-                let maxFreq = Float(store.currentMaxFreq)
-                
-                // Determine which partials are within filter bounds
-                let (activePartials, expectedPeaks) = calculateActivePartialsInBounds(
-                        targetFreq: targetFreq,
-                        minFreq: minFreq,
-                        maxFreq: maxFreq
-                )
-                
-                // Run organ tuner analysis
-                let pllEstimates = organTunerModule.processAudioBlock(
-                        audioSamples: filteredAudio,
-                        targetPitch: targetFreq,
-                        partialIndices: activePartials,
-                        expectedPeaksPerPartial: expectedPeaks
-                )
+                // Run cascaded ANF tracking
+                let anfResults = self.cascadedANFTracker.track()
+                print("\n📊 Study.perform: Got \(anfResults.count) ANF results")
+
                 
                 // Create result
                 let result = StudyResult(
-                        pllEstimates: pllEstimates,
-                        filteredAudio: filteredAudio,
-                        filterBandwidth: (min: store.currentMinFreq, max: store.currentMaxFreq),
+                        anfData: anfResults,
+                        filteredAudio: displaySamples,
+                        filterBandwidth: (min: self.store.currentMinFreq, max: self.store.currentMaxFreq),
                         timestamp: Date(),
                         processingTime: CFAbsoluteTimeGetCurrent() - startTime
                 )
                 
+                let targ = Double(self.store.targetFrequency())
+                
                 // Update published properties on main queue
-                DispatchQueue.main.async { [weak self] in
+                DispatchQueue.main.async { [weak self] () -> Void in
+                        print("  📱 Updating UI with \(anfResults.count) ANF results")
+                        self?.currentANFData = anfResults
                         self?.latestResult = result
-                        self?.currentPLLEstimates = pllEstimates
-                        self?.currentFilteredAudio = filteredAudio
+                        self?.currentFilteredAudio = displaySamples
                         self?.targetOriginalSpectrum = spectrumData
                         self?.targetFrequencies = frequencyData
                         self?.isProcessing = false
                         
-                        print("📊 Filtered audio samples: \(filteredAudio.count)")
-                        print("📊 PLL estimates count: \(pllEstimates.count)")
-                        print("📊 Spectrum data points: \(spectrumData.count)")
                 }
-        }
-        
-        // MARK: - Helper Methods
-        
-        private func calculateActivePartialsInBounds(
-                targetFreq: Float,
-                minFreq: Float,
-                maxFreq: Float
-        ) -> (partials: [Int], expectedPeaks: [Int: Int]) {
-                
-                // Get overtone stack for the instrument
-                // Using typical organ configuration: 8 pipes, up to 16 partials
-                let maxPipes = 8  // Could make this configurable
-                let maxPartials = 16
-                let overtoneStack = self.overtoneStack(pipes: maxPipes, partials: maxPartials)
-                
-                // Build frequency count map
-                var freqCountMap: [Int: Int] = [:]
-                for (freq, count) in overtoneStack {
-                        freqCountMap[freq] = count
-                }
-                
-                // Find partials within bounds
-                var activePartials: [Int] = []
-                var expectedPeaks: [Int: Int] = [:]
-                
-                for partial in 1...maxPartials {
-                        let partialFreq = targetFreq * Float(partial)
-                        
-                        // Check if this partial is within filter bounds
-                        if partialFreq >= minFreq && partialFreq <= maxFreq {
-                                activePartials.append(partial)
-                                
-                                // Get expected peaks from overtone stack
-                                expectedPeaks[partial] = freqCountMap[partial] ?? 1
-                        }
-                }
-                
-                return (activePartials, expectedPeaks)
-        }
-        
-        private func overtoneStack(pipes: Int, partials: Int) -> [(Int, Int)] {
-                var freqCounts: [Int: Int] = [:]
-                for i in 1...pipes {
-                        for j in 1...partials {
-                                let freq = i * j
-                                freqCounts[freq, default: 0] += 1
-                        }
-                }
-                return freqCounts.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
         }
         
         // MARK: - Public Query Methods
         
-        func getLatestPLLEstimates() -> [Int: [PartialEstimate]] {
-                return currentPLLEstimates
+        func getLatestANFData() -> [ANFDatum] {
+                return self.currentANFData
         }
         
         func getLatestFilteredAudio() -> [Float] {
-                return currentFilteredAudio
+                return self.currentFilteredAudio
         }
         
         func getFilterBandwidth() -> (min: Double, max: Double) {
-                return (min: store.currentMinFreq, max: store.currentMaxFreq)
+                return (min: self.store.currentMinFreq, max: self.store.currentMaxFreq)
         }
         
         // MARK: - Filter Management
         
         func refilterAll() {
-                filteredBuffer.updateFilter(
-                        minFreq: store.currentMinFreq,
-                        maxFreq: store.currentMaxFreq,
+                self.filteredBuffer.updateFilter(
+                        minFreq: self.store.currentMinFreq,
+                        maxFreq: self.store.currentMaxFreq,
                         refilter: true
                 )
+        }
+        
+        // MARK: - ANF Configuration Updates
+        
+        func updateANFConfiguration() {
+                // Reset tracker with new parameters when configuration changes
+                self.cascadedANFTracker.reset()
         }
 }

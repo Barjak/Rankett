@@ -552,9 +552,9 @@ final class Study: ObservableObject {
                 // Initialize cascaded ANF tracker
                 self.cascadedANFTracker = CascadedANFTracker(
                         buffer: self.filteredBuffer,
-                        targetFreq: self.currentTargetFrequency,
+                        parameterStore: self.store,
                         frequencyWindow: store.anfFrequencyWindow(),  // Renamed from pllFrequencyWindow
-                        bandwidth: 1.0,  // Hz - configurable
+                        bandwidth: 2.0,  // Hz - configurable
                         numTrackers: 1   // Number of parallel ANFs
                 )
                 

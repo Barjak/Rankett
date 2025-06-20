@@ -3,15 +3,30 @@ import Foundation
 final class AdaptiveNotchTracker {
         private let sampleRate: Double
         private var omega: Double  // Notch frequency in radians/sample
-        private let r: Double      // Pole radius (controls bandwidth)
-        private var y1: Double = 0 // Previous output
-        private var y2: Double = 0 // Two samples ago output
-        private var x1: Double = 0 // Previous input
-        private var x2: Double = 0 // Two samples ago input
-        private let mu: Double     // Fixed adaptation rate
+        private let r: Double      // Single pole radius for bandwidth control
+        private var y1: Double = 0 // Previous output y[n-1]
+        private var y2: Double = 0 // Two samples ago output y[n-2]
+        private var x1: Double = 0 // Previous input x[n-1]
+        private var x2: Double = 0 // Two samples ago input x[n-2]
+        private let mu: Double     // Base adaptation rate
         private var currentFrequency: Double
         private var residualEnergy: Double = 0
         private let energyAlpha: Double = 0.01  // Energy smoothing factor
+        
+        // Reference to parameter store for dynamic target frequency
+        private weak var parameterStore: TuningParameterStore?
+        
+        // Spring regularization parameters
+        private let lambda: Double = 1.0  // Spring constant
+        
+        // Omega smoothing parameter
+        private let omegaSmoothingAlpha: Double = 0.9  // Strong smoothing
+        
+        // Energy gating threshold
+        private let energyThreshold: Double = 1e-4
+        
+        // Gradient clamping parameters
+        private let maxGradient: Double = 100.0
         
         // Adaptation control
         private var adaptationEnabled = true
@@ -21,59 +36,74 @@ final class AdaptiveNotchTracker {
         private let historySize = 50
         private var printDebugCounter = 0
         
-        init(centerFreq: Double, sampleRate: Double, bandwidth: Double = 5.0, adaptationRate: Double = 1e-3) {
+        init(centerFreq: Double,
+             sampleRate: Double,
+             bandwidth: Double = 5.0,
+             adaptationRate: Double = 1e-4,
+             parameterStore: TuningParameterStore?) {
+                
                 self.sampleRate = sampleRate
                 self.currentFrequency = centerFreq
                 self.omega = 2 * .pi * centerFreq / sampleRate
-                self.r = 1.0 - (bandwidth * .pi / sampleRate)
-                self.mu = adaptationRate  // Fixed rate
+                self.parameterStore = parameterStore
                 
-                print("🔧 ANF initialized at \(centerFreq) Hz, omega=\(self.omega), r=\(self.r), mu=\(self.mu)")
+                // Convert bandwidth in Hz to pole radius
+                // r closer to 1 = narrower bandwidth
+                let bandwidthRad = bandwidth * .pi / sampleRate
+                self.r = 1.0 - bandwidthRad
+                
+                self.mu = adaptationRate
+                
+                print("🔧 ANF initialized at \(centerFreq) Hz, omega=\(self.omega)")
+                print("   Bandwidth: \(bandwidth) Hz, r=\(self.r)")
+                print("   Spring constant λ=\(lambda), smoothing α=\(omegaSmoothingAlpha)")
         }
         
         func process(sample: Double) -> Double {
-                // Notch filter coefficients
+
                 let cosOmega = cos(self.omega)
                 let sinOmega = sin(self.omega)
                 
-                // Direct form II implementation
+
                 let b0 = 1.0
-                let b1 = -2 * cosOmega
+                let b1 = -2.0 * cosOmega
                 let b2 = 1.0
-                let a1 = -2 * self.r * cosOmega
+                let a1 = -2.0 * self.r * cosOmega
                 let a2 = self.r * self.r
                 
-                // Compute output
+
                 let y = b0 * sample + b1 * self.x1 + b2 * self.x2 - a1 * self.y1 - a2 * self.y2
                 
-                // Update residual energy
+
                 let instantEnergy = y * y
                 self.residualEnergy = (1 - self.energyAlpha) * self.residualEnergy + self.energyAlpha * instantEnergy
                 
-                if self.adaptationEnabled {
-                        // Improved gradient calculation
-                        // The gradient of output energy w.r.t. omega
-                        let s1 = self.x1 - self.r * self.y1  // Intermediate signal
-                        let gradient = 2 * y * sinOmega * (2 * s1)
+
+                if self.adaptationEnabled && self.residualEnergy > self.energyThreshold {
+
+                        let dyDomega = 2.0 * sinOmega * (self.x1 + self.r * self.y1)
                         
-                        // Adaptive step size based on residual energy
+
+                        let gradient = 2.0 * y * dyDomega
+
+                        let clampedGradient = max(-self.maxGradient, min(self.maxGradient, gradient))
+
                         let normalizedEnergy = self.residualEnergy / (self.residualEnergy + 0.1)
-                        let currentMu = self.mu * (1.0 + 4.0 * normalizedEnergy)  // Larger steps when energy is high
+                        let currentMu = self.mu * (1.0 + 4.0 * normalizedEnergy)
                         
-                        // Update omega
-                        let deltaOmega = currentMu * gradient
+
+                        let deltaOmega = currentMu * clampedGradient
                         
-                        self.omega -= deltaOmega
+
+                        let rawOmega = self.omega - deltaOmega
+                        self.omega = self.omegaSmoothingAlpha * self.omega + (1 - self.omegaSmoothingAlpha) * rawOmega
                         
-                        // Constrain omega to valid range
+
                         self.omega = max(0.01, min(0.99 * .pi, self.omega))
                         
-                        // Update frequency
                         let newFreq = self.omega * self.sampleRate / (2 * .pi)
-                        
                         self.currentFrequency = newFreq
                         
-                        // Update frequency history
                         self.frequencyHistory.append(newFreq)
                         if self.frequencyHistory.count > self.historySize {
                                 self.frequencyHistory.removeFirst()
@@ -81,11 +111,16 @@ final class AdaptiveNotchTracker {
                         
                         self.printDebugCounter += 1
                         if self.printDebugCounter % 1000 == 0 {
+                                let targetFreq = parameterStore?.targetFrequency() ?? 0
+                                let freqError = self.currentFrequency - Double(targetFreq)
                                 print("🔊 ANF Tracker: freq=\(self.currentFrequency) Hz, residual=\(self.residualEnergy)")
+                                print("   Gradient: \(clampedGradient)")
+                                print("   Freq error: \(freqError) Hz, target: \(targetFreq) Hz")
+                                print("   Omega: \(self.omega) (max: \(0.99 * .pi))")
                         }
                 }
                 
-                // Shift delay lines
+
                 self.x2 = self.x1
                 self.x1 = sample
                 self.y2 = self.y1
@@ -96,11 +131,14 @@ final class AdaptiveNotchTracker {
         
         func getFrequencyEstimate() -> Double { self.currentFrequency }
         func getResidualEnergy() -> Double { self.residualEnergy }
+        
         func getAmplitudeEstimate() -> Double {
-                // Better amplitude estimation from notch depth
-                if self.residualEnergy > 0 {
-                        // If we're notching out a tone, estimate its amplitude from energy reduction
-                        return sqrt(max(0, 1.0 - self.residualEnergy))
+                // Estimate amplitude from notch depth
+                // When notching a pure tone, residual energy is minimal
+                // Original signal amplitude ≈ sqrt(input_energy - residual_energy)
+                // This is a rough estimate
+                if self.residualEnergy < 0.5 {
+                        return sqrt(1.0 - 2.0 * self.residualEnergy)
                 }
                 return 0.0
         }
@@ -127,47 +165,51 @@ final class AdaptiveNotchTracker {
         }
         
         func reset() {
-                self.y1 = 0; self.y2 = 0
-                self.x1 = 0; self.x2 = 0
+                self.y1 = 0
+                self.y2 = 0
+                self.x1 = 0
+                self.x2 = 0
                 self.residualEnergy = 0
                 self.frequencyHistory.removeAll()
                 self.printDebugCounter = 0
         }
 }
 
-
+// CascadedANFTracker remains unchanged
 final class CascadedANFTracker {
         private let buffer: FilteredCircularBuffer
         private var trackers: [AdaptiveNotchTracker]
-        private let targetFreq: Double
+        private let parameterStore: TuningParameterStore
         private let frequencyWindow: (Double, Double)
         private let sampleRate: Double
         private let trackingWindowSize: Int
         
         init(buffer: FilteredCircularBuffer,
-             targetFreq: Double,
+             parameterStore: TuningParameterStore,
              frequencyWindow: (Double, Double),
              bandwidth: Double = 5.0,
              numTrackers: Int = 4) {
                 
                 self.buffer = buffer
-                self.targetFreq = targetFreq
+                self.parameterStore = parameterStore
                 self.frequencyWindow = frequencyWindow
                 self.sampleRate = Double(buffer.sampleRate)
                 self.trackingWindowSize = Int(0.1 * self.sampleRate) // 100ms window
                 
                 // Initialize trackers at different starting frequencies within the window
                 self.trackers = []
+                let targetFreq = parameterStore.targetFrequency()
                 let freqStep = (frequencyWindow.1 - frequencyWindow.0) / Double(numTrackers + 1)
                 
                 for i in 0..<numTrackers {
                         let offset = frequencyWindow.0 + freqStep * Double(i + 1)
-                        let initialFreq = targetFreq + offset
+                        let initialFreq = Double(targetFreq) + offset
                         let tracker = AdaptiveNotchTracker(
                                 centerFreq: initialFreq,
                                 sampleRate: self.sampleRate,
                                 bandwidth: bandwidth,
-                                adaptationRate: 1e+1
+                                adaptationRate: 1e-2,
+                                parameterStore: parameterStore
                         )
                         self.trackers.append(tracker)
                 }

@@ -495,15 +495,7 @@ final class FFTProcessor {
                 vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
         }
 }
-struct ANFDatum {
-        let freq: Double
-        let amp: Double
-        let bandwidth: Double
-        let convergenceRating: Double
-}
-
 struct StudyResult {
-        let anfData: [ANFDatum]
         let filteredAudio: [Float]                   // Latest filtered audio window
         let filterBandwidth: (min: Double, max: Double)
         let timestamp: Date
@@ -515,7 +507,6 @@ final class Study: ObservableObject {
         private let audioProcessor: AudioProcessor
         private let store: TuningParameterStore
         private let filteredBuffer: FilteredCircularBuffer
-        private var cascadedANFTracker: CascadedANFTracker
         private let fftProcessor: FFTProcessor
         private var currentTargetFrequency: Double
         
@@ -528,7 +519,6 @@ final class Study: ObservableObject {
         
         // Cached results
         @Published var latestResult: StudyResult?
-        @Published var currentANFData: [ANFDatum] = []
         @Published var currentFilteredAudio: [Float] = []
         @Published var isProcessing = false
         
@@ -540,7 +530,6 @@ final class Study: ObservableObject {
         init(store: TuningParameterStore) {
                 self.store = store
                 self.currentTargetFrequency = Double(store.targetFrequency())
-                self.currentANFData = []
                 
                 self.audioProcessor = AudioProcessor(store: store)
                 self.filteredBuffer = FilteredCircularBuffer(
@@ -549,14 +538,7 @@ final class Study: ObservableObject {
                         audioProcessor: self.audioProcessor
                 )
                 
-                // Initialize cascaded ANF tracker
-                self.cascadedANFTracker = CascadedANFTracker(
-                        buffer: self.filteredBuffer,
-                        parameterStore: self.store,
-                        frequencyWindow: store.anfFrequencyWindow(),  // Renamed from pllFrequencyWindow
-                        bandwidth: 2.0,  // Hz - configurable
-                        numTrackers: 1   // Number of parallel ANFs
-                )
+
                 
                 // Initialize FFT processor
                 self.fftProcessor = FFTProcessor(fftSize: store.fftSize)
@@ -660,13 +642,9 @@ final class Study: ObservableObject {
                 ))
                 
                 // Run cascaded ANF tracking
-                let anfResults = self.cascadedANFTracker.track()
-                print("\n📊 Study.perform: Got \(anfResults.count) ANF results")
-
                 
                 // Create result
                 let result = StudyResult(
-                        anfData: anfResults,
                         filteredAudio: displaySamples,
                         filterBandwidth: (min: self.store.currentMinFreq, max: self.store.currentMaxFreq),
                         timestamp: Date(),
@@ -677,8 +655,6 @@ final class Study: ObservableObject {
                 
                 // Update published properties on main queue
                 DispatchQueue.main.async { [weak self] () -> Void in
-                        print("  📱 Updating UI with \(anfResults.count) ANF results")
-                        self?.currentANFData = anfResults
                         self?.latestResult = result
                         self?.currentFilteredAudio = displaySamples
                         self?.targetOriginalSpectrum = spectrumData
@@ -689,10 +665,7 @@ final class Study: ObservableObject {
         }
         
         // MARK: - Public Query Methods
-        
-        func getLatestANFData() -> [ANFDatum] {
-                return self.currentANFData
-        }
+
         
         func getLatestFilteredAudio() -> [Float] {
                 return self.currentFilteredAudio
@@ -712,10 +685,5 @@ final class Study: ObservableObject {
                 )
         }
         
-        // MARK: - ANF Configuration Updates
-        
-        func updateANFConfiguration() {
-                // Reset tracker with new parameters when configuration changes
-                self.cascadedANFTracker.reset()
-        }
+
 }

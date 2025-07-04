@@ -15,100 +15,6 @@ struct ANFBar: Identifiable {
         }
 }
 
-// MARK: - ANF Visualization State
-class ANFVisualizationState: ObservableObject {
-        @Published var smoothedBars: [ANFBar] = []
-        @Published var smoothingFactor: Double = 0.85
-        @Published var originalSpectrum: Plot?
-        
-        private var barHistory: [String: (frequency: Float, amplitude: Float, bandwidth: Float)] = [:]
-        
-        init() {
-                // Initialize original spectrum plot
-                self.originalSpectrum = Plot(
-                        color: UIColor.systemBlue.withAlphaComponent(0.5),
-                        name: "Original",
-                        lineWidth: 0.8
-                )
-        }
-        
-        func update(from anfData: [ANFDatum]) {
-                print("\n🎯 ANFVisualizationState.update: Processing \(anfData.count) data points")
-                
-                var newBars: [ANFBar] = []
-                
-                for (i, datum) in anfData.enumerated() {
-                        print("  Data[\(i)]: freq=\(datum.freq), amp=\(datum.amp)")
-                        let id = "anf-\(i)"
-                        
-                        // Get smoothed values
-                        let (smoothedFreq, smoothedAmp, smoothedBandwidth) = smoothValues(
-                                id: id,
-                                frequency: Float(datum.freq),
-                                amplitude: Float(datum.amp),
-                                bandwidth: Float(datum.bandwidth)
-                        )
-                        
-                        let bar = ANFBar(
-                                id: id,
-                                frequency: smoothedFreq,
-                                amplitude: smoothedAmp,
-                                bandwidth: smoothedBandwidth,
-                                convergenceRating: Float(datum.convergenceRating)
-                        )
-                        
-                        newBars.append(bar)
-                }
-                
-                // Sort by frequency for stable rendering
-                self.smoothedBars = newBars.sorted { $0.frequency < $1.frequency }
-                print("  Created \(self.smoothedBars.count) bars")
-        }
-        
-        func updateSpectrum(amplitudes: [Float], frequencies: [Float]) {
-                guard var spectrum = self.originalSpectrum,
-                      amplitudes.count == frequencies.count,
-                      !amplitudes.isEmpty else { return }
-                
-                
-                // Store the new target data
-                spectrum.target = amplitudes
-                spectrum.frequencies = frequencies
-                
-                // Initialize current if empty
-                if spectrum.current.isEmpty {
-                        spectrum.current = spectrum.target
-                }
-                
-                // Apply smoothing
-                spectrum.smooth(Float(self.smoothingFactor))
-                
-                // Update the published property
-                self.originalSpectrum = spectrum
-        }
-        
-        private func smoothValues(id: String, frequency: Float, amplitude: Float, bandwidth: Float) -> (Float, Float, Float) {
-                let alpha = Float(self.smoothingFactor)
-                
-                if let history = self.barHistory[id] {
-                        // Apply exponential smoothing
-                        let smoothedFreq = alpha * history.frequency + (1 - alpha) * frequency
-                        let smoothedAmp = alpha * history.amplitude + (1 - alpha) * amplitude
-                        let smoothedBandwidth = alpha * history.bandwidth + (1 - alpha) * bandwidth
-                        
-                        self.barHistory[id] = (smoothedFreq, smoothedAmp, smoothedBandwidth)
-                        return (smoothedFreq, smoothedAmp, smoothedBandwidth)
-                } else {
-                        // First time seeing this bar
-                        self.barHistory[id] = (frequency, amplitude, bandwidth)
-                        return (frequency, amplitude, bandwidth)
-                }
-        }
-        
-        func clearHistory() {
-                self.barHistory.removeAll()
-        }
-}
 
 // MARK: - Zoom State
 enum ZoomState: Int, CaseIterable {
@@ -129,7 +35,6 @@ enum ZoomState: Int, CaseIterable {
 struct GraphView: View {
         @ObservedObject var study: Study
         @ObservedObject var store: TuningParameterStore
-        @StateObject private var anfState = ANFVisualizationState()
         @State private var zoomState: ZoomState = .fullSpectrum
         
         var frequencyRange: ClosedRange<Double> {
@@ -198,99 +103,74 @@ struct GraphView: View {
                 Canvas { context, canvasSize in
                         drawGrid(context: context, size: canvasSize)
                         
-                        drawOriginalSpectrum(context: context, size: canvasSize)
+//                        drawOriginalSpectrum(context: context, size: canvasSize)
                         
-                        drawANFBars(context: context, size: canvasSize)
                         
                         drawAxes(context: context, size: canvasSize)
                 }
         }
         
-        private func drawOriginalSpectrum(context: GraphicsContext, size: CGSize) {
-                guard let spectrum = self.anfState.originalSpectrum,
-                      !spectrum.current.isEmpty,
-                      spectrum.current.count == spectrum.frequencies.count else { return }
-                
-                let freqRange = self.frequencyRange
-                let minDB: Float = Float(self.store.currentMinDB)
-                let maxDB: Float = Float(self.store.currentMaxDB)
-                
-                var path = Path()
-                var started = false
-                
-                // Find the indices for one point before and after the visible range
-                var startIndex = 0
-                var endIndex = spectrum.frequencies.count - 1
-                
-                // Find the last point before the range
-                for i in 0..<spectrum.frequencies.count {
-                        if Double(spectrum.frequencies[i]) >= freqRange.lowerBound {
-                                startIndex = max(0, i - 1)
-                                break
-                        }
-                }
-                
-                // Find the first point after the range
-                for i in (0..<spectrum.frequencies.count).reversed() {
-                        if Double(spectrum.frequencies[i]) <= freqRange.upperBound {
-                                endIndex = min(spectrum.frequencies.count - 1, i + 1)
-                                break
-                        }
-                }
-                
-                // Draw points from startIndex to endIndex
-                for i in startIndex...endIndex {
-                        let freq = spectrum.frequencies[i]
-                        let amplitude = spectrum.current[i]
-                        
-                        // Calculate x position
-                        let x = frequencyToX(Double(freq), size: size.width)
-                        
-                        // Calculate y position (amplitude in dB)
-                        let normalizedValue = (amplitude - minDB) / (maxDB - minDB)
-                        let y = size.height * (1 - CGFloat(normalizedValue))
-                        
-                        if started {
-                                path.addLine(to: CGPoint(x: x, y: y))
-                        } else {
-                                path.move(to: CGPoint(x: x, y: y))
-                                started = true
-                        }
-                }
-                
-                // Draw the spectrum line
-                context.stroke(
-                        path,
-                        with: .color(Color(spectrum.color)),
-                        lineWidth: CGFloat(spectrum.lineWidth)
-                )
-        }
+//        private func drawOriginalSpectrum(context: GraphicsContext, size: CGSize) {
+//                guard let spectrum = self.anfState.originalSpectrum,
+//                      !spectrum.current.isEmpty,
+//                      spectrum.current.count == spectrum.frequencies.count else { return }
+//                
+//                let freqRange = self.frequencyRange
+//                let minDB: Float = Float(self.store.currentMinDB)
+//                let maxDB: Float = Float(self.store.currentMaxDB)
+//                
+//                var path = Path()
+//                var started = false
+//                
+//                // Find the indices for one point before and after the visible range
+//                var startIndex = 0
+//                var endIndex = spectrum.frequencies.count - 1
+//                
+//                // Find the last point before the range
+//                for i in 0..<spectrum.frequencies.count {
+//                        if Double(spectrum.frequencies[i]) >= freqRange.lowerBound {
+//                                startIndex = max(0, i - 1)
+//                                break
+//                        }
+//                }
+//                
+//                // Find the first point after the range
+//                for i in (0..<spectrum.frequencies.count).reversed() {
+//                        if Double(spectrum.frequencies[i]) <= freqRange.upperBound {
+//                                endIndex = min(spectrum.frequencies.count - 1, i + 1)
+//                                break
+//                        }
+//                }
+//                
+//                // Draw points from startIndex to endIndex
+//                for i in startIndex...endIndex {
+//                        let freq = spectrum.frequencies[i]
+//                        let amplitude = spectrum.current[i]
+//                        
+//                        // Calculate x position
+//                        let x = frequencyToX(Double(freq), size: size.width)
+//                        
+//                        // Calculate y position (amplitude in dB)
+//                        let normalizedValue = (amplitude - minDB) / (maxDB - minDB)
+//                        let y = size.height * (1 - CGFloat(normalizedValue))
+//                        
+//                        if started {
+//                                path.addLine(to: CGPoint(x: x, y: y))
+//                        } else {
+//                                path.move(to: CGPoint(x: x, y: y))
+//                                started = true
+//                        }
+//                }
+//                
+//                // Draw the spectrum line
+//                context.stroke(
+//                        path,
+//                        with: .color(Color(spectrum.color)),
+//                        lineWidth: CGFloat(spectrum.lineWidth)
+//                )
+//        }
         
-        private func drawANFBars(context: GraphicsContext, size: CGSize) {
-                print("\n🎨 Drawing ANF bars:")
-                print("  Count: \(self.anfState.smoothedBars.count)")
-                print("  Render range: \(self.frequencyRange)")
-                
-                let barWidth: CGFloat = 2
-                let fixedHeight: CGFloat = size.height * 0.5  // 50% of view height
-                
-                for (index, bar) in self.anfState.smoothedBars.enumerated() {
-                        print("  Bar[\(index)]: freq=\(bar.frequency) Hz")
-                        
-                        let x = frequencyToX(Double(bar.frequency), size: size.width)
-                        print("    x position: \(x) (width: \(size.width))")
-                        
-                        // Fixed height bar for debugging
-                        let rect = CGRect(
-                                x: x - barWidth/2,
-                                y: size.height - fixedHeight,
-                                width: barWidth,
-                                height: fixedHeight
-                        )
-                        
-                        context.fill(Path(rect), with: .color(bar.color))
-                }
-        }
+
         
         private func drawGrid(context: GraphicsContext, size: CGSize) {
                 let freqRange = self.frequencyRange
@@ -419,10 +299,9 @@ struct GraphView: View {
                         // Update ANF bars
                         // Debug: Check what Study ha
                         
-                        self.anfState.update(from: self.study.currentANFData)
                         
                         if !self.study.targetOriginalSpectrum.isEmpty {
-                                print("🎨 Updating spectrum with \(self.study.targetOriginalSpectrum.count) points")
+//                                print("🎨 Updating spectrum with \(self.study.targetOriginalSpectrum.count) points")
                         }
                         
                         // Update spectrum if available
@@ -433,19 +312,10 @@ struct GraphView: View {
                                 // Map the full spectrum to display bins
                                 let mappedSpectrum = binMapper.mapSpectrum(self.study.targetOriginalSpectrum)
                                 
-                                // Update the visualization state with mapped spectrum
-                                self.anfState.updateSpectrum(
-                                        amplitudes: mappedSpectrum,
-                                        frequencies: binMapper.binFrequencies
-                                )
                         } else {
                                 // If no binMapper, use raw spectrum data
                                 if !self.study.targetOriginalSpectrum.isEmpty &&
                                         self.study.targetOriginalSpectrum.count == self.study.targetFrequencies.count {
-                                        self.anfState.updateSpectrum(
-                                                amplitudes: self.study.targetOriginalSpectrum,
-                                                frequencies: self.study.targetFrequencies
-                                        )
                                 }
                         }
                 }

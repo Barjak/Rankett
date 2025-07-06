@@ -144,6 +144,7 @@ struct ContentView: View {
                 isProcessing = false
         }
         
+        
         private func startDataSending() {
                 sendTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                         // Only send if we're connected

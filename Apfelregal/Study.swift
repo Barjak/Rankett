@@ -3,512 +3,28 @@ import SwiftUICore
 import Accelerate
 import CoreML
 
-final class ButterworthBandpassFilter {
-        private let coefficients: FilterCoefficients
-        private var state: FilterState
+struct StudyResults {
+        let logSpectrum: [Double]       // Placeholder for future log-decimated spectrum
+        let frequencies: [Double]       // Frequency bins
+        let trackedPeaks: [Double]      // Placeholder for future peak tracking
         
-        struct FilterCoefficients {
-                let b0, b1, b2: Float
-                let a1, a2: Float  // a0 is normalized to 1.0
-        }
-        
-        struct FilterState {
-                var d1: Float = 0.0
-                var d2: Float = 0.0
-        }
-        
-        init(sampleRate: Double, lowFreq: Double, highFreq: Double) {
-                // Pre-warp frequencies for bilinear transform
-                let fs = sampleRate
-                let wl = 2.0 * Double.pi * lowFreq / fs
-                let wh = 2.0 * Double.pi * highFreq / fs
-                
-                // Pre-warped frequencies
-                let warpedLow = 2.0 * fs * tan(wl / 2.0)
-                let warpedHigh = 2.0 * fs * tan(wh / 2.0)
-                
-                // Bandwidth and center frequency in warped domain
-                let bw = warpedHigh - warpedLow
-                let w0 = sqrt(warpedLow * warpedHigh)
-                
-                // For a 2nd-order Butterworth bandpass:
-                // The analog prototype has a single complex pole pair at s = -1/√2 ± j/√2
-                // For bandpass, we use the lowpass-to-bandpass transformation
-                
-                // Q factor for 2nd-order Butterworth is 1/√2
-                let Q = w0 / bw
-                
-                // Analog bandpass transfer function coefficients
-                // H(s) = (s/Q) / (s² + s/Q + 1) after normalization
-                
-                // Apply bilinear transform s = 2*fs*(z-1)/(z+1)
-                // After substitution and simplification:
-                let K = 2.0 * fs
-                let K2 = K * K
-                let w02 = w0 * w0
-                let norm = K2 + K * w0 / Q + w02
-                
-                // Digital filter coefficients
-                let b0 = Float((K * w0 / Q) / norm)
-                let b1 = Float(0.0)  // Bandpass has zero at DC and Nyquist
-                let b2 = Float(-b0)
-                let a1 = Float((2.0 * (w02 - K2)) / norm)
-                let a2 = Float((K2 - K * w0 / Q + w02) / norm)
-                
-                self.coefficients = FilterCoefficients(
-                        b0: b0, b1: b1, b2: b2,
-                        a1: a1, a2: a2
-                )
-                
-                self.state = FilterState()
-        }
-        
-        func process(_ input: [Float]) -> [Float] {
-                var output = [Float](repeating: 0, count: input.count)
-                
-                for i in 0..<input.count {
-                        output[i] = processSample(input[i])
-                }
-                
-                return output
-        }
-        
-        func processSample(_ x: Float) -> Float {
-                // Transposed Direct Form II
-                // y = b0*x + d1
-                let y = coefficients.b0 * x + state.d1
-                
-                // Update delay states
-                // d1_new = b1*x - a1*y + d2
-                // d2_new = b2*x - a2*y
-                let d1New = coefficients.b1 * x - coefficients.a1 * y + state.d2
-                let d2New = coefficients.b2 * x - coefficients.a2 * y
-                
-                state.d1 = d1New
-                state.d2 = d2New
-                
-                return y
-        }
-        
-        func reset() {
-                state.d1 = 0.0
-                state.d2 = 0.0
-        }
-}
-
-
-
-// MARK: - Filtered Circular Buffer (Redesigned)
-class FilteredCircularBuffer {
-        private let capacity: Int
-        private let buffer: UnsafeMutableBufferPointer<Float>
-        private var writeIndex = 0
-        private var totalWritten = 0
-        private let lock = NSLock()
-        
-        // Reference to audio processor
-        weak var audioProcessor: AudioProcessor?
-        
-        // Tracking position in source
-        private var lastReadPosition = 0
-        
-        // Position tracking for continuous reads (PLL)
-        private var continuousReadPosition = 0
-        
-        // Filter state
-        private var filter: ButterworthBandpassFilter?
-        private var cachedMinFreq: Double = 0
-        private var cachedMaxFreq: Double = 0
+        // Processing parameters
+        let isBaseband: Bool
+        let centerFrequency: Double
         let sampleRate: Double
-        
-        init(capacity: Int, sampleRate: Double, audioProcessor: AudioProcessor) {
-                self.capacity = capacity
-                self.sampleRate = sampleRate
-                self.audioProcessor = audioProcessor
-                let ptr = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
-                self.buffer = UnsafeMutableBufferPointer(start: ptr, count: capacity)
-                buffer.initialize(repeating: 0)
-        }
-        
-        deinit {
-                buffer.deallocate()
-        }
-        
-        /// Update filter if frequency range changed
-        func updateFilter(minFreq: Double, maxFreq: Double, refilter: Bool = false) {
-                lock.lock()
-                defer { lock.unlock() }
-                
-                // Check if we need to update
-                if minFreq == cachedMinFreq && maxFreq == cachedMaxFreq && filter != nil && !refilter {
-                        return // No change needed
-                }
-                
-                // Update filter
-                cachedMinFreq = minFreq
-                cachedMaxFreq = maxFreq
-                filter = ButterworthBandpassFilter(
-                        sampleRate: sampleRate,
-                        lowFreq: minFreq,
-                        highFreq: maxFreq,
-                )
-                
-                // Refilter from raw source if requested
-                if refilter {
-                        refilterFromSource()
-                }
-        }
-        
-        /// Update from audio processor (only new samples)
-        func updateFromAudioProcessor() {
-                lock.lock()
-                defer { lock.unlock() }
-                
-                guard let audioProcessor = audioProcessor,
-                      let filter = filter else { return }
-                
-                // Get new samples since our last position
-                guard let (newSamples, newPosition) = audioProcessor.getSamplesSince(position: lastReadPosition) else {
-                        return // No new samples
-                }
-                
-                // Update our position
-                lastReadPosition = newPosition
-                
-                // Apply filter to new samples
-                let filtered = newSamples//filter.process(newSamples)
-                
-                // Write filtered samples to our buffer
-                writeSamples(filtered)
-        }
-        
-        /// Get continuous samples since last read position (for PLL)
-        /// Returns nil if buffer has overflowed (lost samples)
-        func getContinuousSamples() -> [Float]? {
-                lock.lock()
-                defer { lock.unlock() }
-                
-                // Check if we've lost samples due to buffer overflow
-                if totalWritten - continuousReadPosition > capacity {
-                        // Buffer overflowed - reset position to current write position
-                        // This allows PLL to re-acquire phase naturally
-                        continuousReadPosition = totalWritten
-                        return nil
-                }
-                
-                // No new samples
-                if continuousReadPosition >= totalWritten {
-                        return []
-                }
-                
-                // Calculate how many samples to return
-                let samplesAvailable = totalWritten - continuousReadPosition
-                let samplesToReturn = min(samplesAvailable, capacity)
-                
-                // Calculate read position in circular buffer
-                let readStart = (writeIndex - (totalWritten - continuousReadPosition) + capacity) % capacity
-                
-                // Read samples
-                var samples = [Float](repeating: 0, count: samplesToReturn)
-                
-                // Read in up to two chunks (handling wrap-around)
-                let firstChunkSize = min(samplesToReturn, capacity - readStart)
-                for i in 0..<firstChunkSize {
-                        samples[i] = buffer[readStart + i]
-                }
-                
-                if samplesToReturn > firstChunkSize {
-                        let secondChunkSize = samplesToReturn - firstChunkSize
-                        for i in 0..<secondChunkSize {
-                                samples[firstChunkSize + i] = buffer[i]
-                        }
-                }
-                
-                // Update continuous read position
-                continuousReadPosition = totalWritten
-                
-                return samples
-        }
-        
-        /// Get samples since a specific position (alternative API)
-        func getSamplesSince(position: Int) -> (samples: [Float], newPosition: Int)? {
-                lock.lock()
-                defer { lock.unlock() }
-                
-                // Check if we've lost samples due to buffer overflow
-                if totalWritten - position > capacity {
-                        // Buffer overflowed - return nil to indicate discontinuity
-                        return nil
-                }
-                
-                // No new samples
-                if position >= totalWritten {
-                        return ([], totalWritten)
-                }
-                
-                // Calculate how many samples to return
-                let samplesAvailable = totalWritten - position
-                let samplesToReturn = min(samplesAvailable, capacity)
-                
-                // Calculate read position in circular buffer
-                let readStart = (writeIndex - (totalWritten - position) + capacity) % capacity
-                
-                // Read samples
-                var samples = [Float](repeating: 0, count: samplesToReturn)
-                
-                // Read in up to two chunks (handling wrap-around)
-                let firstChunkSize = min(samplesToReturn, capacity - readStart)
-                for i in 0..<firstChunkSize {
-                        samples[i] = buffer[readStart + i]
-                }
-                
-                if samplesToReturn > firstChunkSize {
-                        let secondChunkSize = samplesToReturn - firstChunkSize
-                        for i in 0..<secondChunkSize {
-                                samples[firstChunkSize + i] = buffer[i]
-                        }
-                }
-                
-                return (samples, totalWritten)
-        }
-        
-        /// Get latest filtered samples (for FFT - preserves existing behavior)
-        func getLatest(size: Int) -> [Float]? {
-                lock.lock()
-                defer { lock.unlock() }
-                
-                guard totalWritten >= size else { return nil }
-                
-                var result = [Float](repeating: 0, count: size)
-                let readStart = (writeIndex - size + capacity) % capacity
-                
-                // Read in up to two chunks
-                let firstChunkSize = min(size, capacity - readStart)
-                for i in 0..<firstChunkSize {
-                        result[i] = buffer[readStart + i]
-                }
-                
-                if size > firstChunkSize {
-                        let secondChunkSize = size - firstChunkSize
-                        for i in 0..<secondChunkSize {
-                                result[firstChunkSize + i] = buffer[i]
-                        }
-                }
-                
-                return result
-        }
-        
-        /// Reset continuous read position (call this when starting PLL processing)
-        func resetContinuousReadPosition() {
-                lock.lock()
-                defer { lock.unlock() }
-                continuousReadPosition = totalWritten
-        }
-        
-        /// Get current position for bookmarking
-        func getCurrentPosition() -> Int {
-                lock.lock()
-                defer { lock.unlock() }
-                return totalWritten
-        }
-        
-        /// Refilter entire buffer from raw source
-        private func refilterFromSource() {
-                guard let audioProcessor = audioProcessor,
-                      let filter = filter else { return }
-                
-                // Get all raw samples
-                let rawSamples = audioProcessor.getAllRawSamples()
-                guard !rawSamples.isEmpty else { return }
-                
-                // Apply filter to all samples
-                let filtered = rawSamples//filter.process(rawSamples)
-                
-                // Reset buffer and write all filtered samples
-                writeIndex = 0
-                totalWritten = 0
-                continuousReadPosition = 0  // Reset continuous read position too
-                writeSamples(filtered)
-                
-                // Update our position to current
-                lastReadPosition = audioProcessor.getCurrentPosition()
-        }
-        
-        private func writeSamples(_ samples: [Float]) {
-                var samplesRemaining = samples.count
-                var sourceOffset = 0
-                
-                while samplesRemaining > 0 {
-                        let chunkSize = min(samplesRemaining, capacity - writeIndex)
-                        for i in 0..<chunkSize {
-                                buffer[writeIndex + i] = samples[sourceOffset + i]
-                        }
-                        
-                        writeIndex = (writeIndex + chunkSize) % capacity
-                        sourceOffset += chunkSize
-                        samplesRemaining -= chunkSize
-                }
-                
-                totalWritten += samples.count
-        }
-        
-        func hasEnoughData(size: Int) -> Bool {
-                lock.lock()
-                defer { lock.unlock() }
-                return totalWritten >= size
-        }
-}
-final class FFTProcessor {
-        let fftSize: Int
-        let halfSize: Int
-        private let log2n: vDSP_Length
-        
-        // FFT setup
-        private let fftSetup: FFTSetup
-        
-        // Split complex buffers
-        private let splitReal: UnsafeMutablePointer<Float>
-        private let splitImag: UnsafeMutablePointer<Float>
-        private var splitComplex: DSPSplitComplex
-        
-        // Temp workspace
-        private let tempReal: UnsafeMutablePointer<Float>
-        private let tempImag: UnsafeMutablePointer<Float>
-        private var tempSplit: DSPSplitComplex
-        
-        // Processing buffers
-        let windowBuffer: UnsafeMutablePointer<Float>
-        let windowedBuffer: UnsafeMutablePointer<Float>
-        let magnitudeBuffer: UnsafeMutablePointer<Float>
-        let frequencyBuffer: UnsafeMutablePointer<Float>
-        
-        init(fftSize: Int) {
-                self.fftSize = fftSize
-                self.halfSize = fftSize / 2
-                self.log2n = vDSP_Length(log2(Float(fftSize)))
-                
-                // Create FFT setup
-                guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-                        fatalError("Failed to create FFT setup")
-                }
-                self.fftSetup = setup
-                
-                // Allocate split complex
-                self.splitReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.splitImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.splitReal.initialize(repeating: 0, count: halfSize)
-                self.splitImag.initialize(repeating: 0, count: halfSize)
-                self.splitComplex = DSPSplitComplex(realp: splitReal, imagp: splitImag)
-                
-                // Allocate temp workspace
-                self.tempReal = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.tempImag = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.tempReal.initialize(repeating: 0, count: halfSize)
-                self.tempImag.initialize(repeating: 0, count: halfSize)
-                self.tempSplit = DSPSplitComplex(realp: tempReal, imagp: tempImag)
-                
-                // Allocate processing buffers
-                self.windowBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-                self.windowedBuffer = UnsafeMutablePointer<Float>.allocate(capacity: fftSize)
-                self.magnitudeBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                self.frequencyBuffer = UnsafeMutablePointer<Float>.allocate(capacity: halfSize)
-                
-                self.magnitudeBuffer.initialize(repeating: 0, count: halfSize)
-                self.frequencyBuffer.initialize(repeating: 0, count: halfSize)
-        }
-        
-        deinit {
-                vDSP_destroy_fftsetup(fftSetup)
-                splitReal.deallocate()
-                splitImag.deallocate()
-                tempReal.deallocate()
-                tempImag.deallocate()
-                windowBuffer.deallocate()
-                windowedBuffer.deallocate()
-                magnitudeBuffer.deallocate()
-                frequencyBuffer.deallocate()
-        }
-        
-        // Commented out - keeping for potential future use
-        /*
-         func initializeBlackmanHarrisWindow() {
-         let a0: Float = 0.35875
-         let a1: Float = 0.48829
-         let a2: Float = 0.14128
-         let a3: Float = 0.01168
-         
-         for i in 0..<fftSize {
-         let n = Float(i)
-         let N = Float(fftSize - 1)
-         let term1 = a1 * cos(2.0 * .pi * n / N)
-         let term2 = a2 * cos(4.0 * .pi * n / N)
-         let term3 = a3 * cos(6.0 * .pi * n / N)
-         windowBuffer[i] = a0 - term1 + term2 - term3
-         }
-         }
-         */
-        
-        func initializeFrequencies(sampleRate: Float) {
-                let binWidth = sampleRate / Float(fftSize)
-                for i in 0..<halfSize {
-                        frequencyBuffer[i] = Float(i) * binWidth // 1024 * (22050 / 2048)
-                }
-        }
-        
-        func performFFT(input: UnsafePointer<Float>, applyWindow: Bool = true) {
-                // Apply window if requested
-                if applyWindow {
-                        vDSP_vmul(input, 1, windowBuffer, 1, windowedBuffer, 1, vDSP_Length(fftSize))
-                } else {
-                        memcpy(windowedBuffer, input, fftSize * MemoryLayout<Float>.size)
-                }
-                
-                // Pack real data into split complex
-                windowedBuffer.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
-                        vDSP_ctoz(complexPtr, 2, &splitComplex, 1, vDSP_Length(halfSize))
-                }
-                
-                // Forward FFT
-                vDSP_fft_zript(
-                        fftSetup,
-                        &splitComplex,
-                        1,
-                        &tempSplit,
-                        log2n,
-                        FFTDirection(FFT_FORWARD)
-                )
-                
-                // Compute magnitudes
-                vDSP_zvmags(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(halfSize))
-                
-                // Scale by 2/N
-                var scaleFactor: Float = 2.0 / Float(fftSize)
-                vDSP_vsmul(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(halfSize))
-        }
-        
-        func convertMagnitudesToDB() {
-                var floorDB: Float = 1e-10
-                var ceilingDB: Float = .greatestFiniteMagnitude
-                vDSP_vclip(magnitudeBuffer, 1, &floorDB, &ceilingDB, magnitudeBuffer, 1, vDSP_Length(halfSize))
-                
-                var reference: Float = 1.0
-                vDSP_vdbcon(magnitudeBuffer, 1, &reference, magnitudeBuffer, 1, vDSP_Length(halfSize), 1)
-        }
-}
-struct StudyResult {
-        let filteredAudio: [Float]                   // Latest filtered audio window
         let filterBandwidth: (min: Double, max: Double)
-        let timestamp: Date
-        let processingTime: TimeInterval
 }
 
 final class Study: ObservableObject {
-        // Core components (owned)
-        private let audioProcessor: AudioProcessor
+        // Core components
+        private let audioStream: AudioStream
         private let store: TuningParameterStore
-        private let filteredBuffer: FilteredCircularBuffer
         private let fftProcessor: FFTProcessor
-        private var currentTargetFrequency: Double
+        
+        // Preprocessing components
+        private var preprocessor: StreamingPreprocessor?
+        private var rawBuffer: CircularBuffer<Double>
+        private var basebandBuffer: CircularBuffer<DSPDoubleComplex>?
         
         // Processing queue
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
@@ -516,174 +32,211 @@ final class Study: ObservableObject {
         // State
         var isRunning = false
         private let updateRate: Double = 60.0  // Hz
+        private let fftRate: Double = 30.0     // Hz
+        private var lastFFTTime: CFAbsoluteTime = 0
         
-        // Cached results
-        @Published var latestResult: StudyResult?
-        @Published var currentFilteredAudio: [Float] = []
-        @Published var isProcessing = false
+        // Bookmarks for continuous reading
+        private var audioStreamBookmark: Int = 0
+        private var preprocessorBookmark: Int = 0
         
-        // FFT spectrum data
-        @Published var targetOriginalSpectrum: [Float] = []
-        @Published var targetFrequencies: [Float] = []
-        var binMapper: BinMapper?
+        // Thread-safe results
+        @Published var results: StudyResults?
+        private let resultsLock = NSLock()
+        private var resultsBuffer: StudyResults?
+        
+        // Internal FFT results (not published)
+        private var fullSpectrum: [Double] = []
+        private var fullFrequencies: [Double] = []
         
         init(store: TuningParameterStore) {
                 self.store = store
-                self.currentTargetFrequency = Double(store.targetFrequency())
-                
-                self.audioProcessor = AudioProcessor(store: store)
-                self.filteredBuffer = FilteredCircularBuffer(
-                        capacity: store.circularBufferSize,
-                        sampleRate: store.audioSampleRate,
-                        audioProcessor: self.audioProcessor
-                )
-                
-
-                
-                // Initialize FFT processor
+                self.audioStream = AudioStream(store: store)
+                self.rawBuffer = CircularBuffer<Double>(capacity: store.circularBufferSize)
                 self.fftProcessor = FFTProcessor(fftSize: store.fftSize)
-                self.fftProcessor.initializeFrequencies(sampleRate: Float(store.audioSampleRate))
-                
-                // Initialize BinMapper
-                self.binMapper = BinMapper(
-                        store: store,
-                        halfSize: store.fftSize / 2
-                )
         }
         
         // MARK: - Start / Stop
         
         func start() {
                 guard !self.isRunning else { return }
-                print("▶️ audioProcessor.start() called")
                 
-                self.filteredBuffer.updateFilter(
-                        minFreq: self.store.currentMinFreq,
-                        maxFreq: self.store.currentMaxFreq
-                )
+                updatePreprocessor()
+                audioStream.start()
+                isRunning = true
                 
-                // Start audio processor
-                self.audioProcessor.start()
-                
-                self.isRunning = true
-                
-                // Start processing loop
-                self.studyQueue.async { [weak self] in
+                studyQueue.async { [weak self] in
                         self?.processingLoop()
                 }
         }
         
         func stop() {
-                self.isRunning = false
-                self.audioProcessor.stop()
+                isRunning = false
+                audioStream.stop()
         }
         
         // MARK: - Main Processing Loop
         
         private func processingLoop() {
-                while self.isRunning {
+                while isRunning {
                         autoreleasepool {
-                                self.perform()
+                                perform()
                         }
-                        Thread.sleep(forTimeInterval: 1.0 / self.updateRate)
+                        Thread.sleep(forTimeInterval: 1.0 / updateRate)
                 }
         }
         
-        // MARK: - Main Analysis Method
+        // MARK: - Main Analysis
         
-        func perform() {
-                DispatchQueue.main.async { [weak self] in
-                        self?.isProcessing = true
+        private func perform() {
+                // Read new audio samples
+                let (audioSamples, newBookmark) = audioStream.readAsDouble(sinceBookmark: audioStreamBookmark)
+                audioStreamBookmark = newBookmark
+                
+                guard !audioSamples.isEmpty else { return }
+                
+                // Write to raw buffer
+                _ = rawBuffer.write(Array(audioSamples))
+                
+                // Check if it's time for FFT
+                let currentTime = CFAbsoluteTimeGetCurrent()
+                let timeSinceLastFFT = currentTime - lastFFTTime
+                
+                guard timeSinceLastFFT >= (1.0 / fftRate) else { return }
+                
+                lastFFTTime = currentTime
+                
+                // Update preprocessor if settings changed
+                updatePreprocessor()
+                
+                // Process based on mode
+                if store.usePreprocessor, let preprocessor = preprocessor {
+                        processBasebandMode(preprocessor: preprocessor)
+                } else {
+                        processFullSpectrumMode()
                 }
+        }
+        
+        // MARK: - Processing Modes
+        
+        private func processBasebandMode(preprocessor: StreamingPreprocessor) {
+                // Get only new samples for preprocessor to maintain continuity
+                let (newSamples, newPreprocessorBookmark) = rawBuffer.read(sinceBookmark: preprocessorBookmark)
+                preprocessorBookmark = newPreprocessorBookmark
                 
-                let startTime = CFAbsoluteTimeGetCurrent()
+                guard !newSamples.isEmpty else { return }
                 
-                // Update filter based on current frequency range
-                self.filteredBuffer.updateFilter(
-                        minFreq: self.store.currentMinFreq,
-                        maxFreq: self.store.currentMaxFreq,
-                        refilter: true
+                // Process through preprocessor
+                let basebandSamples = preprocessor.process(samples: newSamples)
+                
+                guard !basebandSamples.isEmpty else { return }
+                
+                // Write to baseband buffer
+                basebandBuffer?.write(basebandSamples)
+                
+                // Get recent samples for FFT
+                let (fftSamples, _) = basebandBuffer?.read(maxSize: store.fftSize) ?? ([], 0)
+                
+                guard !fftSamples.isEmpty else { return }
+                
+                // Perform complex FFT on baseband data
+                let (spectrum, frequencies) = fftProcessor.processBaseband(
+                        samples: fftSamples,
+                        fBaseband: preprocessor.fBaseband,
+                        decimatedRate: preprocessor.fsOut,
+                        applyWindow: true
                 )
                 
-                self.filteredBuffer.updateFromAudioProcessor()
+                // Store full resolution internally
+                fullSpectrum = Array(spectrum)
+                fullFrequencies = Array(frequencies)
                 
-                // Get latest samples for UI display (not for ANF processing)
-                guard let displaySamples = self.filteredBuffer.getLatest(size: min(4096, self.store.circularBufferSize)) else {
-                        DispatchQueue.main.async { [weak self] in
-                                self?.isProcessing = false
-                        }
-                        return
-                }
-                
-                // Get fixed window for FFT (separate from ANF processing)
-                guard let fftWindow = self.filteredBuffer.getLatest(size: self.store.fftSize) else {
-                        DispatchQueue.main.async { [weak self] in
-                                self?.isProcessing = false
-                        }
-                        return // Not enough data yet
-                }
-                
-                // Perform FFT on fixed window (no windowing)
-                fftWindow.withUnsafeBufferPointer { audioPtr in
-                        self.fftProcessor.performFFT(input: audioPtr.baseAddress!, applyWindow: false)
-                }
-                
-                // Convert to dB scale
-                self.fftProcessor.convertMagnitudesToDB()
-                
-                // Copy FFT results
-                let spectrumData = Array(UnsafeBufferPointer(
-                        start: self.fftProcessor.magnitudeBuffer,
-                        count: self.fftProcessor.halfSize
-                ))
-                let frequencyData = Array(UnsafeBufferPointer(
-                        start: self.fftProcessor.frequencyBuffer,
-                        count: self.fftProcessor.halfSize
-                ))
-                
-                // Run cascaded ANF tracking
-                
-                // Create result
-                let result = StudyResult(
-                        filteredAudio: displaySamples,
-                        filterBandwidth: (min: self.store.currentMinFreq, max: self.store.currentMaxFreq),
-                        timestamp: Date(),
-                        processingTime: CFAbsoluteTimeGetCurrent() - startTime
+                // Create results
+                let results = StudyResults(
+                        logSpectrum: [],  // Placeholder
+                        frequencies: Array(frequencies),
+                        trackedPeaks: [],  // Placeholder
+                        isBaseband: true,
+                        centerFrequency: preprocessor.fBaseband,
+                        sampleRate: preprocessor.fsOut,
+                        filterBandwidth: (min: store.currentMinFreq, max: store.currentMaxFreq)
                 )
                 
-                let targ = Double(self.store.targetFrequency())
+                publishResults(results)
+        }
+        
+        private func processFullSpectrumMode() {
+                // Get recent samples for FFT
+                let (samples, _) = rawBuffer.read(maxSize: store.fftSize)
                 
-                // Update published properties on main queue
-                DispatchQueue.main.async { [weak self] () -> Void in
-                        self?.latestResult = result
-                        self?.currentFilteredAudio = displaySamples
-                        self?.targetOriginalSpectrum = spectrumData
-                        self?.targetFrequencies = frequencyData
-                        self?.isProcessing = false
+                guard !samples.isEmpty else { return }
+                
+                // Perform FFT on full spectrum
+                let (spectrum, frequencies) = fftProcessor.processFullSpectrum(
+                        samples: samples,
+                        sampleRate: store.audioSampleRate,
+                        applyWindow: true
+                )
+                
+                // Store full resolution internally
+                fullSpectrum = Array(spectrum)
+                fullFrequencies = Array(frequencies)
+                
+                // Create results
+                let results = StudyResults(
+                        logSpectrum: [],  // Placeholder
+                        frequencies: Array(frequencies),
+                        trackedPeaks: [],  // Placeholder
+                        isBaseband: false,
+                        centerFrequency: 0,
+                        sampleRate: store.audioSampleRate,
+                        filterBandwidth: (min: 0, max: store.audioSampleRate / 2)
+                )
+                
+                publishResults(results)
+        }
+        
+        // MARK: - Preprocessor Management
+        
+        private func updatePreprocessor() {
+                if store.usePreprocessor {
+                        let centerFreq = (store.currentMinFreq + store.currentMaxFreq) / 2.0
                         
+                        let needsUpdate = preprocessor == nil ||
+                        abs(preprocessor!.fBaseband - centerFreq) > 1.0
+                        
+                        if needsUpdate {
+                                preprocessor = StreamingPreprocessor(
+                                        fsOrig: store.audioSampleRate,
+                                        fBaseband: centerFreq,
+                                        marginCents: 50,
+                                        attenDB: 30
+                                )
+                                
+                                if let pp = preprocessor {
+                                        let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))
+                                        basebandBuffer = CircularBuffer<DSPDoubleComplex>(capacity: decimatedBufferSize)
+                                        preprocessorBookmark = rawBuffer.getTotalWritten()
+                                }
+                        }
+                } else {
+                        if preprocessor != nil {
+                                preprocessor = nil
+                                basebandBuffer = nil
+                        }
                 }
         }
         
-        // MARK: - Public Query Methods
-
+        // MARK: - Thread-Safe Results Publishing
         
-        func getLatestFilteredAudio() -> [Float] {
-                return self.currentFilteredAudio
+        private func publishResults(_ newResults: StudyResults) {
+                resultsLock.lock()
+                resultsBuffer = newResults
+                resultsLock.unlock()
+                
+                DispatchQueue.main.async { [weak self] in
+                        self?.resultsLock.lock()
+                        self?.results = self?.resultsBuffer
+                        self?.resultsLock.unlock()
+                }
         }
-        
-        func getFilterBandwidth() -> (min: Double, max: Double) {
-                return (min: self.store.currentMinFreq, max: self.store.currentMaxFreq)
-        }
-        
-        // MARK: - Filter Management
-        
-        func refilterAll() {
-                self.filteredBuffer.updateFilter(
-                        minFreq: self.store.currentMinFreq,
-                        maxFreq: self.store.currentMaxFreq,
-                        refilter: true
-                )
-        }
-        
-
 }

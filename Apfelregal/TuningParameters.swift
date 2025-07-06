@@ -112,7 +112,9 @@ class TuningParameterStore: ObservableObject {
         @Published var currentMinFreq: Double = 20
         @Published var currentMaxFreq: Double = 20_000
         
+        @Published var usePreprocessor: Bool = true
         
+
         let currentMinDB = -180.0
         let currentMaxDB = 20.0
 

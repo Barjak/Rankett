@@ -72,6 +72,18 @@ struct ContentView: View {
                                                 .padding(.horizontal)
                                                 .frame(height: 30)
                                         
+                                        // Debug info
+                                        if let results = study.results {
+                                                HStack {
+                                                        Text("Spectrum: \(results.logDecimatedSpectrum.count) bins")
+                                                        Text("Mode: \(results.isBaseband ? "Baseband" : "Full")")
+                                                        Text("Rate: \(Int(results.sampleRate)) Hz")
+                                                }
+                                                .font(.caption)
+                                                .foregroundColor(.green)
+                                                .padding(.horizontal)
+                                        }
+                                        
                                         // ─────────── PLOTS ───────────
                                         StudyView(study: study, store: store)
                                                 .background(Color.black)

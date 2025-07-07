@@ -4,9 +4,9 @@ import Accelerate
 import CoreML
 
 struct StudyResults {
-        let logSpectrum: [Double]       // Placeholder for future log-decimated spectrum
-        let frequencies: [Double]       // Frequency bins
-        let trackedPeaks: [Double]      // Placeholder for future peak tracking
+        let logDecimatedSpectrum: [Double]
+        let logDecimatedFrequencies: [Double]
+        let trackedPeaks: [Double]
         
         // Processing parameters
         let isBaseband: Bool
@@ -20,6 +20,8 @@ final class Study: ObservableObject {
         private let audioStream: AudioStream
         private let store: TuningParameterStore
         private let fftProcessor: FFTProcessor
+        private let binMapper: BinMapper
+
         
         // Preprocessing components
         private var preprocessor: StreamingPreprocessor?
@@ -53,6 +55,16 @@ final class Study: ObservableObject {
                 self.audioStream = AudioStream(store: store)
                 self.rawBuffer = CircularBuffer<Double>(capacity: store.circularBufferSize)
                 self.fftProcessor = FFTProcessor(fftSize: store.fftSize)
+                
+                // Initialize BinMapper for log-decimation
+                self.binMapper = BinMapper(
+                        binCount: 80,
+                        halfSize: store.fftSize / 2,
+                        sampleRate: store.audioSampleRate,
+                        useLogScale: true,
+                        minFreq: store.viewportMinFreq,
+                        maxFreq: store.viewportMaxFreq
+                )
         }
         
         // MARK: - Start / Stop
@@ -141,7 +153,7 @@ final class Study: ObservableObject {
                 // Perform complex FFT on baseband data
                 let (spectrum, frequencies) = fftProcessor.processBaseband(
                         samples: fftSamples,
-                        fBaseband: preprocessor.fBaseband,
+                        basebandFreq: preprocessor.fBaseband,
                         decimatedRate: preprocessor.fsOut,
                         applyWindow: true
                 )
@@ -150,15 +162,19 @@ final class Study: ObservableObject {
                 fullSpectrum = Array(spectrum)
                 fullFrequencies = Array(frequencies)
                 
+                // Create log-decimated spectrum
+                let logDecimatedSpectrum = binMapper.mapSpectrum(spectrum)
+                let logDecimatedFrequencies = binMapper.frequencies
+                
                 // Create results
                 let results = StudyResults(
-                        logSpectrum: [],  // Placeholder
-                        frequencies: Array(frequencies),
-                        trackedPeaks: [],  // Placeholder
+                        logDecimatedSpectrum: Array(logDecimatedSpectrum),
+                        logDecimatedFrequencies: Array(logDecimatedFrequencies),
+                        trackedPeaks: [],
                         isBaseband: true,
                         centerFrequency: preprocessor.fBaseband,
                         sampleRate: preprocessor.fsOut,
-                        filterBandwidth: (min: store.currentMinFreq, max: store.currentMaxFreq)
+                        filterBandwidth: (min: store.viewportMinFreq, max: store.viewportMaxFreq)
                 )
                 
                 publishResults(results)
@@ -181,11 +197,15 @@ final class Study: ObservableObject {
                 fullSpectrum = Array(spectrum)
                 fullFrequencies = Array(frequencies)
                 
+                // Create log-decimated spectrum
+                let logDecimatedSpectrum = binMapper.mapSpectrum(spectrum)
+                let logDecimatedFrequencies = binMapper.frequencies
+                
                 // Create results
                 let results = StudyResults(
-                        logSpectrum: [],  // Placeholder
-                        frequencies: Array(frequencies),
-                        trackedPeaks: [],  // Placeholder
+                        logDecimatedSpectrum: Array(logDecimatedSpectrum),
+                        logDecimatedFrequencies: Array(logDecimatedFrequencies),
+                        trackedPeaks: [],
                         isBaseband: false,
                         centerFrequency: 0,
                         sampleRate: store.audioSampleRate,
@@ -199,15 +219,15 @@ final class Study: ObservableObject {
         
         private func updatePreprocessor() {
                 if store.usePreprocessor {
-                        let centerFreq = (store.currentMinFreq + store.currentMaxFreq) / 2.0
+                        let basebandFreq = store.targetNote.frequency(concertA: store.concertPitch)
                         
                         let needsUpdate = preprocessor == nil ||
-                        abs(preprocessor!.fBaseband - centerFreq) > 1.0
+                        abs(preprocessor!.fBaseband - basebandFreq) > 1.0
                         
                         if needsUpdate {
                                 preprocessor = StreamingPreprocessor(
                                         fsOrig: store.audioSampleRate,
-                                        fBaseband: centerFreq,
+                                        fBaseband: basebandFreq,
                                         marginCents: 50,
                                         attenDB: 30
                                 )

@@ -1,21 +1,6 @@
 import SwiftUI
 import Accelerate
 
-struct ANFBar: Identifiable {
-        let id: String
-        let frequency: Float
-        let amplitude: Float
-        let bandwidth: Float
-        let convergenceRating: Float
-        
-        var color: Color {
-                // Color based on convergence rating: red (weak) -> yellow -> green (strong)
-                let hue = Double(convergenceRating) * 0.33 // 0 to 0.33 (red to green)
-                return Color(hue: hue, saturation: 0.8, brightness: 0.9)
-        }
-}
-
-
 // MARK: - Zoom State
 enum ZoomState: Int, CaseIterable {
         case fullSpectrum = 0
@@ -38,7 +23,7 @@ struct GraphView: View {
         @State private var zoomState: ZoomState = .fullSpectrum
         
         var frequencyRange: ClosedRange<Double> {
-                self.store.currentMinFreq...self.store.currentMaxFreq
+                store.viewportMinFreq...store.viewportMaxFreq
         }
         
         var body: some View {
@@ -56,7 +41,7 @@ struct GraphView: View {
                                         HStack {
                                                 Spacer()
                                                 Button(action: cycleZoom) {
-                                                        Image(systemName: self.zoomState.iconName)
+                                                        Image(systemName: zoomState.iconName)
                                                                 .font(.title2)
                                                                 .foregroundColor(.white)
                                                                 .padding(8)
@@ -70,16 +55,15 @@ struct GraphView: View {
                                 }
                         }
                         .onAppear {
-                                self.study.start()
-                                startUpdating()
+                                study.start()
                         }
-                        .onChange(of: self.store.targetNote) { _ in
+                        .onChange(of: store.targetNote) { _ in
                                 updateZoomBounds()
                         }
-                        .onChange(of: self.store.concertPitch) { _ in
+                        .onChange(of: store.concertPitch) { _ in
                                 updateZoomBounds()
                         }
-                        .onChange(of: self.store.targetPartial) { _ in
+                        .onChange(of: store.targetPartial) { _ in
                                 updateZoomBounds()
                         }
                 }
@@ -87,93 +71,88 @@ struct GraphView: View {
         
         private func updateZoomBounds() {
                 // Only update if we're in a zoom state that depends on target frequency
-                if self.zoomState != .fullSpectrum {
-                        setZoomState(self.zoomState)
+                if zoomState != .fullSpectrum {
+                        setZoomState(zoomState)
                 }
         }
         
         private func cycleZoom() {
-                let currentIndex = self.zoomState.rawValue
+                let currentIndex = zoomState.rawValue
                 let nextIndex = (currentIndex + 1) % ZoomState.allCases.count
-                self.zoomState = ZoomState.allCases[nextIndex]
-                setZoomState(self.zoomState)
+                zoomState = ZoomState.allCases[nextIndex]
+                setZoomState(zoomState)
         }
         
         private func plotView(size: CGSize) -> some View {
                 Canvas { context, canvasSize in
                         drawGrid(context: context, size: canvasSize)
-                        
-//                        drawOriginalSpectrum(context: context, size: canvasSize)
-                        
-                        
+                        drawSpectrum(context: context, size: canvasSize)
                         drawAxes(context: context, size: canvasSize)
                 }
         }
         
-//        private func drawOriginalSpectrum(context: GraphicsContext, size: CGSize) {
-//                guard let spectrum = self.anfState.originalSpectrum,
-//                      !spectrum.current.isEmpty,
-//                      spectrum.current.count == spectrum.frequencies.count else { return }
-//                
-//                let freqRange = self.frequencyRange
-//                let minDB: Float = Float(self.store.currentMinDB)
-//                let maxDB: Float = Float(self.store.currentMaxDB)
-//                
-//                var path = Path()
-//                var started = false
-//                
-//                // Find the indices for one point before and after the visible range
-//                var startIndex = 0
-//                var endIndex = spectrum.frequencies.count - 1
-//                
-//                // Find the last point before the range
-//                for i in 0..<spectrum.frequencies.count {
-//                        if Double(spectrum.frequencies[i]) >= freqRange.lowerBound {
-//                                startIndex = max(0, i - 1)
-//                                break
-//                        }
-//                }
-//                
-//                // Find the first point after the range
-//                for i in (0..<spectrum.frequencies.count).reversed() {
-//                        if Double(spectrum.frequencies[i]) <= freqRange.upperBound {
-//                                endIndex = min(spectrum.frequencies.count - 1, i + 1)
-//                                break
-//                        }
-//                }
-//                
-//                // Draw points from startIndex to endIndex
-//                for i in startIndex...endIndex {
-//                        let freq = spectrum.frequencies[i]
-//                        let amplitude = spectrum.current[i]
-//                        
-//                        // Calculate x position
-//                        let x = frequencyToX(Double(freq), size: size.width)
-//                        
-//                        // Calculate y position (amplitude in dB)
-//                        let normalizedValue = (amplitude - minDB) / (maxDB - minDB)
-//                        let y = size.height * (1 - CGFloat(normalizedValue))
-//                        
-//                        if started {
-//                                path.addLine(to: CGPoint(x: x, y: y))
-//                        } else {
-//                                path.move(to: CGPoint(x: x, y: y))
-//                                started = true
-//                        }
-//                }
-//                
-//                // Draw the spectrum line
-//                context.stroke(
-//                        path,
-//                        with: .color(Color(spectrum.color)),
-//                        lineWidth: CGFloat(spectrum.lineWidth)
-//                )
-//        }
-        
+        private func drawSpectrum(context: GraphicsContext, size: CGSize) {
+                guard let results = study.results,
+                      !results.logDecimatedSpectrum.isEmpty,
+                      results.logDecimatedSpectrum.count == results.logDecimatedFrequencies.count else { return }
+                
+                let freqRange = frequencyRange
+                let maxDB = store.maxDB
+                let minDB = store.minDB
 
+                var path = Path()
+                var started = false
+                
+                // Find the indices for one point before and after the visible range
+                var startIndex = 0
+                var endIndex = results.logDecimatedFrequencies.count - 1
+                
+                // Find the last point before the range
+                for i in 0..<results.logDecimatedFrequencies.count {
+                        if results.logDecimatedFrequencies[i] >= freqRange.lowerBound {
+                                startIndex = max(0, i - 1)
+                                break
+                        }
+                }
+                
+                // Find the first point after the range
+                for i in (0..<results.logDecimatedFrequencies.count).reversed() {
+                        if results.logDecimatedFrequencies[i] <= freqRange.upperBound {
+                                endIndex = min(results.logDecimatedFrequencies.count - 1, i + 1)
+                                break
+                        }
+                }
+                
+                // Draw points from startIndex to endIndex
+                for i in startIndex...endIndex {
+                        let freq = results.logDecimatedFrequencies[i]
+                        let amplitude = results.logDecimatedSpectrum[i]
+                        
+                        // Calculate x position
+                        let x = frequencyToX(freq, size: size.width)
+                        
+                        // Calculate y position (amplitude in dB)
+                        let normalizedValue = (amplitude - minDB) / (maxDB - minDB)
+                        let y = size.height * (1 - CGFloat(normalizedValue))
+                        
+                        if started {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                                path.move(to: CGPoint(x: x, y: y))
+                                started = true
+                        }
+                }
+                
+                // Draw the spectrum line
+                context.stroke(
+                        path,
+                        with: .color(.cyan),
+                        lineWidth: 2
+                )
+        }
         
         private func drawGrid(context: GraphicsContext, size: CGSize) {
-                let freqRange = self.frequencyRange
+                let freqRange = frequencyRange
                 
                 // Frequency grid lines (logarithmic)
                 let gridFrequencies = logarithmicGridLines(
@@ -195,10 +174,10 @@ struct GraphView: View {
                 }
                 
                 // Amplitude grid lines (linear)
-                let dbLines = stride(from: self.store.currentMinDB, through: 0, by: 10)
+                let dbLines = stride(from: store.minDB, through: 0, by: 10)
                 
                 for db in dbLines {
-                        let y = size.height - (CGFloat(db - self.store.currentMinDB) / CGFloat(self.store.currentMaxDB - self.store.currentMinDB)) * size.height * 0.8
+                        let y = size.height - (CGFloat(db - store.minDB) / CGFloat(store.maxDB - store.minDB)) * size.height
                         
                         context.stroke(
                                 Path { path in
@@ -241,7 +220,7 @@ struct GraphView: View {
         }
         
         private func frequencyToX(_ freq: Double, size: CGFloat) -> CGFloat {
-                let freqRange = self.frequencyRange
+                let freqRange = frequencyRange
                 let logMinFreq = log10(freqRange.lowerBound)
                 let logMaxFreq = log10(freqRange.upperBound)
                 let logRange = logMaxFreq - logMinFreq
@@ -274,50 +253,19 @@ struct GraphView: View {
         private func setZoomState(_ state: ZoomState) {
                 switch state {
                 case .fullSpectrum:
-                        self.store.currentMinFreq = self.store.renderMinFrequency
-                        self.store.currentMaxFreq = self.store.renderMaxFrequency
+                        store.viewportMinFreq = store.fullSpectrumMinFreq
+                        store.viewportMaxFreq = store.fullSpectrumMaxFreq
                         
                 case .threeOctaves:
-                        // Three octaves above target pitch, starting at -1 semitone
-                        let baseFreq = self.store.targetNote.transposed(by: -1).frequency(concertA: self.store.concertPitch)
-                        let maxFreq = self.store.targetNote.transposed(by: 12 * 3).frequency(concertA: self.store.concertPitch)
-                        self.store.currentMinFreq = Double(baseFreq)
-                        self.store.currentMaxFreq = min(Double(maxFreq), self.store.renderMaxFrequency)
+                        let baseFreq = store.targetNote.transposed(by: -1).frequency(concertA: store.concertPitch)
+                        let maxFreq = store.targetNote.transposed(by: 12 * 3).frequency(concertA: store.concertPitch)
+                        store.viewportMinFreq = Double(baseFreq)
+                        store.viewportMaxFreq = min(Double(maxFreq), store.fullSpectrumMaxFreq)
                         
                 case .targetFundamental:
-                        // ±50 cents around target pitch
-                        let centerFreq = Double(self.store.targetFrequency())
-                        self.store.currentMinFreq = centerFreq * pow(2, -50.0/1200.0)
-                        self.store.currentMaxFreq = centerFreq * pow(2, 50.0/1200.0)
-                }
-        }
-        
-        // MARK: - Updates
-        
-        private func startUpdating() {
-                Timer.scheduledTimer(withTimeInterval: 1.0/30.0, repeats: true) { _ in
-                        // Update ANF bars
-                        // Debug: Check what Study ha
-                        
-                        
-                        if !self.study.targetOriginalSpectrum.isEmpty {
-//                                print("🎨 Updating spectrum with \(self.study.targetOriginalSpectrum.count) points")
-                        }
-                        
-                        // Update spectrum if available
-                        if let binMapper = self.study.binMapper,
-                           !self.study.targetOriginalSpectrum.isEmpty,
-                           self.study.targetOriginalSpectrum.count == self.study.targetFrequencies.count {
-                                
-                                // Map the full spectrum to display bins
-                                let mappedSpectrum = binMapper.mapSpectrum(self.study.targetOriginalSpectrum)
-                                
-                        } else {
-                                // If no binMapper, use raw spectrum data
-                                if !self.study.targetOriginalSpectrum.isEmpty &&
-                                        self.study.targetOriginalSpectrum.count == self.study.targetFrequencies.count {
-                                }
-                        }
+                        let centerFreq = store.targetFrequency()
+                        store.viewportMinFreq = centerFreq * pow(2, -50.0/1200.0)
+                        store.viewportMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
         }
 }
@@ -343,33 +291,18 @@ struct StudyView: View {
         
         private func headerView() -> some View {
                 HStack {
-                        Text(String(format: "Target: %.2f Hz", self.store.targetFrequency()))
+                        Text(String(format: "Target: %.2f Hz", store.targetFrequency()))
                                 .font(.caption)
                                 .foregroundColor(.white)
                         
                         Spacer()
+                        
+                        if let results = study.results {
+                                Text(results.isBaseband ? "Baseband" : "Full Spectrum")
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
+                        }
                 }
                 .padding(.horizontal)
-        }
-}
-
-// MARK: - Simple Plot Data Structure
-struct Plot {
-        var current: [Float] = []
-        var target: [Float] = []
-        var frequencies: [Float] = []
-        let color: UIColor
-        let name: String
-        let lineWidth: CGFloat
-        
-        mutating func smooth(_ factor: Float) {
-                guard self.current.count == self.target.count else {
-                        self.current = self.target
-                        return
-                }
-                let beta = 1.0 - factor
-                for i in 0..<self.current.count {
-                        self.current[i] = self.current[i] * factor + self.target[i] * beta
-                }
         }
 }

@@ -52,92 +52,82 @@ struct Instrument: Identifiable, Equatable {
         let wallThickness: Double       // in mm
 }
 
-// MARK: – TuningParameterStore (now contains everything from AnalyzerConfig + your tuning params)
-
 class TuningParameterStore: ObservableObject {
+        // MARK: - Audio Configuration
         @Published var audioSampleRate: Double = 44_100
+        let fftSize: Int = 2048 * 4
+        let hopSize: Int = 512
         
+        // MARK: - Target Pitch Settings
         @Published var concertPitch: Double = 440.0
         @Published var targetNote: Note = Note(name: "a1")
         @Published var targetPartial: Int = 1
         
-        @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
-        
-        @Published var temperament: Temperament = .equal
-        @Published var gateTime: Double = 100.0    // milliseconds
-        @Published var audibleToneEnabled: Bool = false
-        @Published var pitchIncrementSemitones: Int = 1
-        @Published var mutationStopTranspose: Int = 0
-        
+        // MARK: - Display Settings
+        @Published var displayBinCount: Int = 512
+        @Published var useLogFrequencyScale: Bool = true
+        @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
+        let minDB: Double = -180.0
+        let maxDB: Double = 20.0
         
+        // MARK: - Frequency View Range
+        // Full spectrum bounds (constants)
+        let fullSpectrumMinFreq: Double = 20
+        let fullSpectrumMaxFreq: Double = 20_000
+        
+        // Current viewport bounds (for zooming)
+        @Published var viewportMinFreq: Double = 20
+        @Published var viewportMaxFreq: Double = 20_000
+        
+        // MARK: - Processing Settings
+        @Published var usePreprocessor: Bool = true
+        @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
+        @Published var gateTime: Double = 100.0  // milliseconds
+        
+        // MARK: - Instrument & Tuning
         @Published var selectedInstrument: Instrument = Instrument(
                 name: "Principal 8'",
                 overtoneProfile: [1.0, 0.5, 0.33, 0.25, 0.2, 0.17, 0.14, 0.125],
                 pipeScale: 138.0,
                 wallThickness: 0.0
         )
+        @Published var temperament: Temperament = .equal
+        @Published var audibleToneEnabled: Bool = false
+        @Published var pitchIncrementSemitones: Int = 1
+        @Published var mutationStopTranspose: Int = 0
         
-        @Published var centsError: Float = 0.0
-        // Nyquist is derived automatically
-        var nyquistFrequency: Double { audioSampleRate * 0.5 }
+        // MARK: - Error State
+        @Published var centsError: Double = 0.0
         
-        // fftSize is a constant 8192 (immutable)
-        let fftSize: Int = 2048 * 4
-        let hopSize: Int = 512
+        // MARK: - Computed Properties
+        var nyquistFrequency: Double {
+                audioSampleRate * 0.5
+        }
         
-
-        @Published var downscaleBinCount: Int = 512
-        
-        // Derived values:
         var frequencyResolution: Double {
                 audioSampleRate / Double(fftSize)
         }
+        
         var circularBufferSize: Int {
                 fftSize * 3
         }
-        let renderingTargetFPS: Double = 60
-        var frameInterval: TimeInterval {
-                1.0 / renderingTargetFPS
+        
+        func targetFrequency() -> Double {
+                Double(targetNote.frequency(concertA: concertPitch))
         }
         
-        // Animation smoothing, log‐scale flag, min/max frequency are constants
-        // TODO: make these mutable with a slider in the UI
-        @Published var animationSmoothingFactor: Float = 0.7
-        @Published var renderWithLogFrequencyScale: Bool = true
-        @Published var renderMinFrequency: Double = 20
-        @Published var renderMaxFrequency: Double = 20_000
-        @Published var resolutionMUSIC: Double = 200
-        @Published var currentMinFreq: Double = 20
-        @Published var currentMaxFreq: Double = 20_000
-        
-        @Published var usePreprocessor: Bool = true
-        
-
-        let currentMinDB = -180.0
-        let currentMaxDB = 20.0
-
-        func targetFrequency() -> Float {
-                return Float(targetNote.frequency(concertA: concertPitch))
-        }
-        
-        
-        let anfWindowSizeCents: Double = 100.0
-        func anfFrequencyWindow() -> (Double, Double) {
-                let halfWindow: Double = anfWindowSizeCents / 2.0
-                let center = Double(targetFrequency())
-                let lower: Double = center * pow(2, -halfWindow/1200.0)
-                let upper: Double = center * pow(2, halfWindow/1200.0)
-                return (lower, upper)
-        }
-        
-        func zoomCenterFrequencies(totalWindowCents: Float = 100.0) -> (lower: Double, upper: Double) {
-                let center = self.targetNote.frequency(concertA: concertPitch)
-                let (lowerF, upperF) = Note.calculateZoomCenterFrequency(centerFreq: center,
-                                                                         totalWindowCents: totalWindowCents)
+        func zoomCenterFrequencies(totalWindowCents: Double = 100.0) -> (lower: Double, upper: Double) {
+                let center = targetNote.frequency(concertA: concertPitch)
+                let (lowerF, upperF) = Note.calculateZoomCenterFrequency(
+                        centerFreq: center,
+                        totalWindowCents: totalWindowCents
+                )
                 return (Double(lowerF), Double(upperF))
         }
-
+        
+        // MARK: - Singleton
         static let `default` = TuningParameterStore()
 }
+

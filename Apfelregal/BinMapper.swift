@@ -1,115 +1,110 @@
-// BinMapper.swift
 import Foundation
+import Accelerate
 
 final class BinMapper {
-        private let store: TuningParameterStore
-        private let binCount: Int
-        private let halfSize: Int
+        let binCount: Int
+        let halfSize: Int
+        let useLogScale: Bool
         
-        // Pre-computed mapping for log scale
-        private let logBinIndices: [(low: Int, high: Int, fraction: Float)]
+        // Pre-computed mapping indices
+        private let lowIndices: [Int]
+        private let highIndices: [Int]
+        private let fractions: [Double]
         
-        init(store: TuningParameterStore, halfSize: Int) {
-                self.store = store
+        // Pre-allocated buffers
+        private let outputBuffer: UnsafeMutablePointer<Double>
+        private let frequencyBuffer: UnsafeMutablePointer<Double>
+        
+        init(binCount: Int,
+             halfSize: Int,
+             sampleRate: Double,
+             useLogScale: Bool,
+             minFreq: Double,
+             maxFreq: Double) {
+                
+                self.binCount = binCount
                 self.halfSize = halfSize
-                self.binCount = store.downscaleBinCount
+                self.useLogScale = useLogScale
                 
-                let binCount = self.binCount
-                let halfSize = self.halfSize
-                let useLog   = store.renderWithLogFrequencyScale
+                // Allocate buffers
+                self.outputBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
+                self.frequencyBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
                 
-                // these only depend on locals, never on self
-                let indices: [(low: Int, high: Int, fraction: Float)]
-                if useLog {
-                        let nyquist  = store.nyquistFrequency
-                        let freqRes  = store.frequencyResolution
-                        let logMin   = log10(store.renderMinFrequency)
-                        let logMax   = log10(min(store.renderMaxFrequency, nyquist))
+                // Pre-compute mapping indices and frequencies
+                var lowIndices = [Int](repeating: 0, count: binCount)
+                var highIndices = [Int](repeating: 0, count: binCount)
+                var fractions = [Double](repeating: 0, count: binCount)
+                
+                let nyquist = sampleRate / 2.0
+                let freqRes = sampleRate / Double(halfSize * 2)
+                
+                if useLogScale {
+                        let logMin = log10(minFreq)
+                        let logMax = log10(min(maxFreq, nyquist))
+                        let logRange = logMax - logMin
                         
-                        indices = (0..<binCount).map { i in
-                                let t       = Float(i) / Float(binCount - 1)
-                                let logFreq = logMin + (logMax - logMin) * Double(t)
-                                let freq    = pow(10, logFreq)
-                                let binF    = Float(freq / freqRes)
+                        for i in 0..<binCount {
+                                let t = Double(i) / Double(binCount - 1)
+                                let logFreq = logMin + logRange * t
+                                let freq = pow(10, logFreq)
+                                let binF = freq / freqRes
                                 
-                                let low     = Int(floor(binF))
-                                let high    = min(low + 1, halfSize - 1)
-                                let fraction = binF - Float(low)
-                                return (low, high, fraction)
+                                let low = Int(floor(binF))
+                                let high = min(low + 1, halfSize - 1)
+                                let fraction = binF - Double(low)
+                                
+                                lowIndices[i] = min(max(low, 0), halfSize - 1)
+                                highIndices[i] = high
+                                fractions[i] = fraction
+                                frequencyBuffer[i] = freq
                         }
                 } else {
-                        indices = (0..<binCount).map { i in
-                                let binF     = Float(i) * Float(halfSize - 1) / Float(binCount - 1)
-                                let low      = Int(floor(binF))
-                                let high     = min(low + 1, halfSize - 1)
-                                let fraction = binF - Float(low)
-                                return (low, high, fraction)
-                        }
-                }
-                
-                // 3) Now we can safely assign
-                self.logBinIndices = indices
-        }
-        
-        /// Map input spectrum to output bins using pre-computed indices
-        func mapSpectrum(_ input: [Float]) -> [Float] {
-                guard input.count >= halfSize else { return [] }
-                
-                var output = [Float](repeating: -80.0, count: binCount)
-                
-                for (i, mapping) in logBinIndices.enumerated() {
-                        // Linear interpolation between bins
-                        let value = (1 - mapping.fraction) * input[mapping.low] +
-                        mapping.fraction * input[mapping.high]
-                        output[i] = value
-                }
-                
-                return output
-        }
-        
-        func mapHPSSpectrum(_ hpsSpectrum: [Float]) -> [Float] {
-                guard !hpsSpectrum.isEmpty else { return [] }
-                
-                var output = [Float](repeating: -80.0, count: binCount)
-                
-                // HPS spectrum has same bin width as original FFT
-                let hpsMaxIndex = hpsSpectrum.count - 1
-                
-                for (i, mapping) in logBinIndices.enumerated() {
-                        // Check if this bin's frequency is within HPS spectrum range
-                        if mapping.low <= hpsMaxIndex {
-                                if mapping.high <= hpsMaxIndex {
-                                        // Both bins are within range, interpolate normally
-                                        let value = (1 - mapping.fraction) * hpsSpectrum[mapping.low] +
-                                        mapping.fraction * hpsSpectrum[mapping.high]
-                                        output[i] = value
-                                } else {
-                                        // Only low bin is within range, use it directly
-                                        output[i] = hpsSpectrum[mapping.low]
-                                }
-                        }
-                        // If both bins are out of range, leave as -80.0
-                }
-                
-                return output
-        }
-        
-        /// Get frequency for each output bin
-        var binFrequencies: [Float] {
-                if store.renderWithLogFrequencyScale {
-                        let logMin = log10(store.renderMinFrequency)
-                        let logMax = log10(min(store.renderMaxFrequency, store.nyquistFrequency))
+                        let maxBinF = Double(halfSize - 1)
                         
-                        return (0..<binCount).map { i in
-                                let t = Float(i) / Float(binCount - 1)
-                                let logFreq = logMin + (logMax - logMin) * Double(t)
-                                return Float(pow(10, logFreq))
-                        }
-                } else {
-                        let maxFreq = Float(store.nyquistFrequency)
-                        return (0..<binCount).map { i in
-                                Float(i) * maxFreq / Float(binCount - 1)
+                        for i in 0..<binCount {
+                                let binF = Double(i) * maxBinF / Double(binCount - 1)
+                                let low = Int(floor(binF))
+                                let high = min(low + 1, halfSize - 1)
+                                let fraction = binF - Double(low)
+                                
+                                lowIndices[i] = low
+                                highIndices[i] = high
+                                fractions[i] = fraction
+                                frequencyBuffer[i] = Double(i) * nyquist / Double(binCount - 1)
                         }
                 }
+                
+                self.lowIndices = lowIndices
+                self.highIndices = highIndices
+                self.fractions = fractions
+        }
+        
+        deinit {
+                outputBuffer.deallocate()
+                frequencyBuffer.deallocate()
+        }
+        
+        func mapSpectrum(_ input: ArraySlice<Double>) -> ArraySlice<Double> {
+                guard input.count >= halfSize else {
+                        outputBuffer.initialize(repeating: -80.0, count: binCount)
+                        return ArraySlice(UnsafeBufferPointer(start: outputBuffer, count: binCount))
+                }
+                
+                // Convert input slice to contiguous array for safe indexing
+                let inputArray = Array(input)
+                
+                for i in 0..<binCount {
+                        let low = lowIndices[i]
+                        let high = highIndices[i]
+                        let fraction = fractions[i]
+                        
+                        outputBuffer[i] = (1 - fraction) * inputArray[low] + fraction * inputArray[high]
+                }
+                
+                return ArraySlice(UnsafeBufferPointer(start: outputBuffer, count: binCount))
+        }
+        
+        var frequencies: ArraySlice<Double> {
+                ArraySlice(UnsafeBufferPointer(start: frequencyBuffer, count: binCount))
         }
 }

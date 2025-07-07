@@ -130,14 +130,11 @@ struct Note: Equatable, Hashable {
                 return Note(midiNumber: midiNumber + semitones)
         }
         
-        func frequency(concertA: Float) -> Float {
-                return concertA * pow(2.0, Float(midiNumber - 69) / 12.0)
-        }
-        func frequency(concertA: Double) -> Float {
-                return Float(concertA) * pow(2.0, Float(midiNumber - 69) / 12.0)
+        func frequency(concertA: Double) -> Double {
+                return concertA * pow(2.0, Double(midiNumber - 69) / 12.0)
         }
         
-        static func calculateZoomCenterFrequency(centerFreq: Float, totalWindowCents: Float = 100.0) -> (lower: Float, upper: Float) {
+        static func calculateZoomCenterFrequency(centerFreq: Double, totalWindowCents: Double = 100.0) -> (lower: Double, upper: Double) {
                 let centsToLower = -totalWindowCents / 2.0
                 let centsToUpper = totalWindowCents / 2.0
                 

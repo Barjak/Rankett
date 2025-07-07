@@ -52,9 +52,23 @@ struct Instrument: Identifiable, Equatable {
         let wallThickness: Double       // in mm
 }
 
+enum ZoomState: Int, CaseIterable {
+        case fullSpectrum = 0
+        case threeOctaves = 1
+        case targetFundamental = 2
+        
+        var iconName: String {
+                switch self {
+                case .fullSpectrum: return "magnifyingglass"
+                case .threeOctaves: return "magnifyingglass.circle"
+                case .targetFundamental: return "magnifyingglass.circle.fill"
+                }
+        }
+}
+
 class TuningParameterStore: ObservableObject {
         // MARK: - Audio Configuration
-        @Published var audioSampleRate: Double = 44_100
+        var audioSampleRate: Double = 44_100
         let fftSize: Int = 2048 * 4
         let hopSize: Int = 512
         
@@ -72,19 +86,23 @@ class TuningParameterStore: ObservableObject {
         let minDB: Double = -180.0
         let maxDB: Double = 20.0
         
-        // MARK: - Frequency View Range
-        // Full spectrum bounds (constants)
+        // MARK: - Zoom & Viewport
+        @Published var zoomState: ZoomState = .fullSpectrum {
+                didSet {
+                        updateViewportForZoom()
+                }
+        }
+        
         let fullSpectrumMinFreq: Double = 20
         let fullSpectrumMaxFreq: Double = 20_000
         
-        // Current viewport bounds (for zooming)
         @Published var viewportMinFreq: Double = 20
         @Published var viewportMaxFreq: Double = 20_000
         
         // MARK: - Processing Settings
         @Published var usePreprocessor: Bool = true
         @Published var endCorrectionAlgorithm: EndCorrectionAlgorithm = .naive
-        @Published var gateTime: Double = 100.0  // milliseconds
+        @Published var gateTime: Double = 100.0
         
         // MARK: - Instrument & Tuning
         @Published var selectedInstrument: Instrument = Instrument(
@@ -98,7 +116,6 @@ class TuningParameterStore: ObservableObject {
         @Published var pitchIncrementSemitones: Int = 1
         @Published var mutationStopTranspose: Int = 0
         
-        // MARK: - Error State
         @Published var centsError: Double = 0.0
         
         // MARK: - Computed Properties
@@ -118,16 +135,24 @@ class TuningParameterStore: ObservableObject {
                 Double(targetNote.frequency(concertA: concertPitch))
         }
         
-        func zoomCenterFrequencies(totalWindowCents: Double = 100.0) -> (lower: Double, upper: Double) {
-                let center = targetNote.frequency(concertA: concertPitch)
-                let (lowerF, upperF) = Note.calculateZoomCenterFrequency(
-                        centerFreq: center,
-                        totalWindowCents: totalWindowCents
-                )
-                return (Double(lowerF), Double(upperF))
+        private func updateViewportForZoom() {
+                switch zoomState {
+                case .fullSpectrum:
+                        viewportMinFreq = fullSpectrumMinFreq
+                        viewportMaxFreq = fullSpectrumMaxFreq
+                        
+                case .threeOctaves:
+                        let baseFreq = targetNote.transposed(by: -1).frequency(concertA: concertPitch)
+                        let maxFreq = targetNote.transposed(by: 12 * 3).frequency(concertA: concertPitch)
+                        viewportMinFreq = Double(baseFreq)
+                        viewportMaxFreq = min(Double(maxFreq), fullSpectrumMaxFreq)
+                        
+                case .targetFundamental:
+                        let centerFreq = targetFrequency()
+                        viewportMinFreq = centerFreq * pow(2, -50.0/1200.0)
+                        viewportMaxFreq = centerFreq * pow(2, 50.0/1200.0)
+                }
         }
         
-        // MARK: - Singleton
         static let `default` = TuningParameterStore()
 }
-

@@ -5,6 +5,8 @@ final class BinMapper {
         let binCount: Int
         let halfSize: Int
         let useLogScale: Bool
+        let smoothingFactor: Double
+
         
         // Pre-computed mapping indices
         private let lowIndices: [Int]
@@ -20,16 +22,20 @@ final class BinMapper {
              sampleRate: Double,
              useLogScale: Bool,
              minFreq: Double,
-             maxFreq: Double) {
+             maxFreq: Double,
+             smoothingFactor: Double = 0.1) {
                 
                 self.binCount = binCount
                 self.halfSize = halfSize
                 self.useLogScale = useLogScale
+                self.smoothingFactor = smoothingFactor
+
                 
                 // Allocate buffers
                 self.outputBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
                 self.frequencyBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
-                
+                self.outputBuffer.initialize(repeating: -80.0, count: binCount)
+
                 // Pre-compute mapping indices and frequencies
                 var lowIndices = [Int](repeating: 0, count: binCount)
                 var highIndices = [Int](repeating: 0, count: binCount)
@@ -86,11 +92,13 @@ final class BinMapper {
         
         func mapSpectrum(_ input: ArraySlice<Double>) -> ArraySlice<Double> {
                 guard input.count >= halfSize else {
-                        outputBuffer.initialize(repeating: -80.0, count: binCount)
+                        // Keep returning current values (smoothed towards -80)
+                        for i in 0..<binCount {
+                                outputBuffer[i] = outputBuffer[i] * smoothingFactor + (-80.0) * (1 - smoothingFactor)
+                        }
                         return ArraySlice(UnsafeBufferPointer(start: outputBuffer, count: binCount))
                 }
                 
-                // Convert input slice to contiguous array for safe indexing
                 let inputArray = Array(input)
                 
                 for i in 0..<binCount {
@@ -98,7 +106,8 @@ final class BinMapper {
                         let high = highIndices[i]
                         let fraction = fractions[i]
                         
-                        outputBuffer[i] = (1 - fraction) * inputArray[low] + fraction * inputArray[high]
+                        let newValue = (1 - fraction) * inputArray[low] + fraction * inputArray[high]
+                        outputBuffer[i] = outputBuffer[i] * smoothingFactor + newValue * (1 - smoothingFactor)
                 }
                 
                 return ArraySlice(UnsafeBufferPointer(start: outputBuffer, count: binCount))

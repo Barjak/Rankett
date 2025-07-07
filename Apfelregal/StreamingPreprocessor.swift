@@ -50,6 +50,25 @@ class StreamingPreprocessor {
                         attenDB: attenDB
                 )
                 
+                print("🔍 Filter design: order=\(sections), decimation=\(decimationFactor)")
+                for (i, section) in sos.enumerated() {
+                        print("🔍 Section \(i): b=[\(section[0]), \(section[1]), \(section[2])], a=[1.0, \(section[3]), \(section[4])]")
+                        
+                        // Check pole magnitudes for stability
+                        let a1 = section[3]
+                        let a2 = section[4]
+                        // For transfer function 1 + a1*z^-1 + a2*z^-2, poles are roots of z^2 + a1*z + a2
+                        let discriminant = a1 * a1 - 4 * a2
+                        if discriminant >= 0 {
+                                let p1 = (-a1 + sqrt(discriminant)) / 2
+                                let p2 = (-a1 - sqrt(discriminant)) / 2
+                                print("🔍   Real poles: \(p1), \(p2), magnitudes: \(abs(p1)), \(abs(p2))")
+                        } else {
+                                let mag = sqrt(a2)
+                                print("🔍   Complex poles with magnitude: \(mag)")
+                        }
+                }
+                
                 self.sosCoefficients = sos
                 self.sectionCount = sections
                 
@@ -83,6 +102,7 @@ class StreamingPreprocessor {
         }
         
         func process(samples: [Double]) -> [DSPDoubleComplex] {
+                
                 let count = samples.count
                 guard count > 0 else { return [] }
                 
@@ -97,7 +117,7 @@ class StreamingPreprocessor {
                         }
                         return result
                 }
-                
+
                 heterodyneToBaseband(samples: samples, output: heterodyneSplitBuffer, count: count)
                 applyIIRFilter(input: heterodyneSplitBuffer, output: iirOutputSplitBuffer, count: count)
                 return performDecimation(input: iirOutputSplitBuffer, inputCount: count)
@@ -170,14 +190,17 @@ class StreamingPreprocessor {
         private static func designButterworthFilter(fsOrig: Double, decimationFactor: Int, attenDB: Double) -> ([[Double]], Int) {
                 let nyquist = fsOrig / 2
                 let decimatedNyquist = fsOrig / (2 * Double(decimationFactor))
-                let wp = 0.8 * decimatedNyquist / nyquist
+                let wp = 0.5 * decimatedNyquist / nyquist
                 let ws = 1.0 * decimatedNyquist / nyquist
                 
                 let n = butterworthOrder(wp: wp, ws: ws, gpass: 0.5, gstop: attenDB)
                 let (poles, gain) = butterworthAnalogPrototype(order: n)
                 
-                let wc = wp
-                let scaledPoles = poles.map { DSPDoubleComplex(real: $0.real * wc, imag: $0.imag * wc) }
+                let wpw = 2 * fsOrig * tan(.pi * wp / 2)
+                let scaledPoles = poles.map { p in
+                        DSPDoubleComplex(real: p.real * wpw,
+                                         imag: p.imag * wpw)
+                }
                 
                 let (zPoles, zGain) = bilinearTransform(poles: scaledPoles, zeros: [], gain: gain, fs: fsOrig)
                 

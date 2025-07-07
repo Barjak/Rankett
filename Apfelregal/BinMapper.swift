@@ -1,3 +1,5 @@
+// BinMapper.swift
+
 import Foundation
 import Accelerate
 
@@ -6,14 +8,12 @@ final class BinMapper {
         let halfSize: Int
         let useLogScale: Bool
         let smoothingFactor: Double
-
+        private let heterodyneOffset: Double
         
-        // Pre-computed mapping indices
         private let lowIndices: [Int]
         private let highIndices: [Int]
         private let fractions: [Double]
         
-        // Pre-allocated buffers
         private let outputBuffer: UnsafeMutablePointer<Double>
         private let frequencyBuffer: UnsafeMutablePointer<Double>
         
@@ -23,37 +23,47 @@ final class BinMapper {
              useLogScale: Bool,
              minFreq: Double,
              maxFreq: Double,
-             smoothingFactor: Double = 0.1) {
+             heterodyneOffset: Double = 0,
+             smoothingFactor: Double = 0.0) {
                 
                 self.binCount = binCount
                 self.halfSize = halfSize
                 self.useLogScale = useLogScale
                 self.smoothingFactor = smoothingFactor
-
+                self.heterodyneOffset = heterodyneOffset
                 
-                // Allocate buffers
                 self.outputBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
                 self.frequencyBuffer = UnsafeMutablePointer<Double>.allocate(capacity: binCount)
                 self.outputBuffer.initialize(repeating: -80.0, count: binCount)
-
-                // Pre-compute mapping indices and frequencies
+                
                 var lowIndices = [Int](repeating: 0, count: binCount)
                 var highIndices = [Int](repeating: 0, count: binCount)
                 var fractions = [Double](repeating: 0, count: binCount)
                 
                 let nyquist = sampleRate / 2.0
-                let freqRes = sampleRate / Double(halfSize * 2)
+                let isBaseband = heterodyneOffset != 0
+                let effectiveFFTSize = isBaseband ? halfSize : halfSize * 2
+                let freqRes = sampleRate / Double(effectiveFFTSize)
                 
                 if useLogScale {
                         let logMin = log10(minFreq)
-                        let logMax = log10(min(maxFreq, nyquist))
+                        let logMax = log10(min(maxFreq, nyquist + heterodyneOffset))
                         let logRange = logMax - logMin
                         
                         for i in 0..<binCount {
                                 let t = Double(i) / Double(binCount - 1)
                                 let logFreq = logMin + logRange * t
-                                let freq = pow(10, logFreq)
-                                let binF = freq / freqRes
+                                let displayFreq = pow(10, logFreq)
+                                frequencyBuffer[i] = displayFreq
+                                
+                                let inputFreq = displayFreq - heterodyneOffset
+                                let binF: Double
+                                
+                                if isBaseband {
+                                        binF = (inputFreq + nyquist) / freqRes
+                                } else {
+                                        binF = inputFreq / freqRes
+                                }
                                 
                                 let low = Int(floor(binF))
                                 let high = min(low + 1, halfSize - 1)
@@ -62,21 +72,29 @@ final class BinMapper {
                                 lowIndices[i] = min(max(low, 0), halfSize - 1)
                                 highIndices[i] = high
                                 fractions[i] = fraction
-                                frequencyBuffer[i] = freq
                         }
                 } else {
-                        let maxBinF = Double(halfSize - 1)
-                        
                         for i in 0..<binCount {
-                                let binF = Double(i) * maxBinF / Double(binCount - 1)
+                                let normalizedPos = Double(i) / Double(binCount - 1)
+                                let displayFreq = minFreq + normalizedPos * (maxFreq - minFreq)
+                                frequencyBuffer[i] = displayFreq
+                                
+                                let inputFreq = displayFreq - heterodyneOffset
+                                let binF: Double
+                                
+                                if isBaseband {
+                                        binF = (inputFreq + nyquist) / freqRes
+                                } else {
+                                        binF = inputFreq / freqRes
+                                }
+                                
                                 let low = Int(floor(binF))
                                 let high = min(low + 1, halfSize - 1)
                                 let fraction = binF - Double(low)
                                 
-                                lowIndices[i] = low
+                                lowIndices[i] = min(max(low, 0), halfSize - 1)
                                 highIndices[i] = high
                                 fractions[i] = fraction
-                                frequencyBuffer[i] = Double(i) * nyquist / Double(binCount - 1)
                         }
                 }
                 
@@ -92,7 +110,6 @@ final class BinMapper {
         
         func mapSpectrum(_ input: ArraySlice<Double>) -> ArraySlice<Double> {
                 guard input.count >= halfSize else {
-                        // Keep returning current values (smoothed towards -80)
                         for i in 0..<binCount {
                                 outputBuffer[i] = outputBuffer[i] * smoothingFactor + (-80.0) * (1 - smoothingFactor)
                         }

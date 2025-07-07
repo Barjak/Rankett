@@ -69,7 +69,7 @@ enum ZoomState: Int, CaseIterable {
 class TuningParameterStore: ObservableObject {
         // MARK: - Audio Configuration
         var audioSampleRate: Double = 44_100
-        let fftSize: Int = 2048 * 4
+        let fftSize: Int = 2048 * 2
         let hopSize: Int = 512
         
         // MARK: - Target Pitch Settings
@@ -83,8 +83,8 @@ class TuningParameterStore: ObservableObject {
         @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
-        let minDB: Double = -180.0
-        let maxDB: Double = 20.0
+        let minDB: Double = -100.0
+        let maxDB: Double = 250.0
         
         // MARK: - Zoom & Viewport
         @Published var zoomState: ZoomState = .fullSpectrum {

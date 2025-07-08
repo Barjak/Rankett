@@ -250,6 +250,8 @@ final class FFTProcessor {
                 lastSampleRate = sampleRate
                 lastBasebandFreq = basebandFreq
                 lastIsBaseband = true
+                print("Baseband freqs[0]=\(outputFrequencyBuffer[0]), freqs[\(halfSize)]=\(outputFrequencyBuffer[halfSize])")
+
         }
         
         private func reorderBasebandSpectrum() {

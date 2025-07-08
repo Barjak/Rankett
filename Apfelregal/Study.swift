@@ -218,7 +218,8 @@ final class Study: ObservableObject {
                 if let preprocessor = preprocessor, let buffer = basebandBuffer {
                         let samplesNeeded = Int(1.0 * preprocessor.fsOut)
                         let (fftSamples, _) = buffer.read(count: samplesNeeded)
-                        print("Sample length: ", fftSamples.count)
+                        print("Baseband buffer: requested=\(store.fftSize), got=\(fftSamples.count)")
+
                         if !fftSamples.isEmpty {
                                 basebandResult = basebandFFT.processBaseband(
                                         samples: fftSamples,
@@ -303,7 +304,11 @@ final class Study: ObservableObject {
                                 halfSize: store.fftSize,
                                 useLogScale: false
                         )
+                        print("Baseband coverage: \(pp.fBaseband - pp.fsOut/2) to \(pp.fBaseband + pp.fsOut/2) Hz")
+                        print("Display window: \(pp.fBaseband - pp.bandwidth/2) to \(pp.fBaseband + pp.bandwidth/2) Hz")
+
                 }
+                
         }
         
         private func updatePreprocessor() {
@@ -319,6 +324,7 @@ final class Study: ObservableObject {
                                 marginCents: store.targetBandwidth,
                                 attenDB: 50
                         )
+                        
                         
                         if let pp = preprocessor {
                                 let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))

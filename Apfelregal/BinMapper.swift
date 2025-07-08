@@ -142,16 +142,21 @@ final class BinMapper {
         }
         
         private func computeIndices(displayFreq: Double,
-                                             heterodyneOffset: Double,
-                                             freqRes: Double,
-                                             nyquist: Double,
-                                             isBaseband: Bool,
-                                             index: Int) {
+                                    heterodyneOffset: Double,
+                                    freqRes: Double,
+                                    nyquist: Double,
+                                    isBaseband: Bool,
+                                    index: Int) {
                 let inputFreq = displayFreq - heterodyneOffset
                 
                 let binF: Double
                 if isBaseband {
-                        binF = (inputFreq) / freqRes
+                        // For baseband, negative frequencies are in the first half after reordering
+                        if inputFreq < 0 {
+                                binF = (inputFreq + sampleRate) / freqRes
+                        } else {
+                                binF = inputFreq / freqRes
+                        }
                 } else {
                         binF = inputFreq / freqRes
                 }

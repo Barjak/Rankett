@@ -100,6 +100,7 @@ class TuningParameterStore: ObservableObject {
         @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
+        var targetBandwidth = 200.0
         let minDB: Double = -150.0
         let maxDB: Double = 0.0
         
@@ -208,16 +209,16 @@ class TuningParameterStore: ObservableObject {
                         print("   Clamped note: \(clampedNote.name) (was: \(currentNote.name))")
                         print("   Target freq: \(String(format: "%.2f", targetFreq)) Hz")
                         
-                        viewportMinFreq = targetFreq * pow(2, -50.0/1200.0)
-                        viewportMaxFreq = targetFreq * pow(2, (36*100 + 50)/1200.0)
+                        viewportMinFreq = targetFreq * pow(2, -targetBandwidth/1200.0)
+                        viewportMaxFreq = targetFreq * pow(2, (36*100 + targetBandwidth)/1200.0)
                         
                 case .targetFundamental:
                         let centerFreq = Double(currentNote.frequency(concertA: currentPitch)) * Double(currentPartial)
                         print("🔍 Updating viewport for TARGET FUNDAMENTAL")
                         print("   Center freq: \(String(format: "%.2f", centerFreq)) Hz")
                         
-                        viewportMinFreq = centerFreq * pow(2, -50.0/1200.0)
-                        viewportMaxFreq = centerFreq * pow(2, 50.0/1200.0)
+                        viewportMinFreq = centerFreq * pow(2, -targetBandwidth/1200.0)
+                        viewportMaxFreq = centerFreq * pow(2, targetBandwidth/1200.0)
                 }
                 
                 print("   Viewport: \(String(format: "%.2f-%.2f", viewportMinFreq, viewportMaxFreq)) Hz")

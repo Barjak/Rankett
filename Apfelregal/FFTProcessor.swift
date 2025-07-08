@@ -187,7 +187,7 @@ final class FFTProcessor {
         
         private func normalizeAndConvertToDB(count: Int, actualSampleCount: Int, applyWindow: Bool, singleSided: Bool) {
                 
-                var invL = 1.0 / Double(singleSided ? actualSampleCount : fftSize)
+                var invL = 1.0 / Double(actualSampleCount)
                 
                 if applyWindow && actualSampleCount > 0 {
                         var windowSum: Double = 0
@@ -268,3 +268,26 @@ final class FFTProcessor {
                 memcpy(outputFrequencyBuffer + halfSize, tempBuffer, halfSize * MemoryLayout<Double>.size)
         }
 }
+
+
+//vDSP_fft_ziptD
+//Computes a forward or inverse in-place, double-precision complex FFT using a temporary buffer.
+//extern void vDSP_fft_ziptD(FFTSetupD __Setup, const DSPDoubleSplitComplex * __C, vDSP_Stride __IC, const DSPDoubleSplitComplex * __Buffer, vDSP_Length __Log2N, FFTDirection __Direction);
+//Parameters
+//__Setup
+//The FFT setup structure for this transform. The setup’s structure Log2N must be greater than or equal to this function’s Log2N.
+//                                
+//                                __C
+//                                A pointer to the input-output data.
+//                                
+//                                __IC
+//                                The stride between the elements in C, set to 1 for best performance.
+//                                
+//                                __Buffer
+//                                A temporary vector that the operation uses for storing interim results. The real and imaginary parts of the buffer must both contain the lesser of 2Log2N elements or 16,384 bytes. For best performance, the buffer addresses must be 16-byte aligned or better.
+//                                
+//                                __Log2N
+//                                The base 2 exponent of the number of elements to process. For example, to process 1024 elements, specify 10 for parameter Log2N.
+//                                
+//                                __Direction
+//                                A flag that specifies the transform direction. Pass kFFTDirection_Forward to transform from the time domain to the frequency domain. Pass kFFTDirection_Inverse to transform from the frequency domain to the time domain.

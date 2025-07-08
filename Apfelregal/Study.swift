@@ -172,7 +172,7 @@ final class Study: ObservableObject {
 
         
         private func perform() {
-                let (audioSamples, newBookmark) = audioStream.readAsDouble(sinceBookmark: audioStreamBookmark)
+                let (audioSamples, newBookmark) = audioStream.readAsDouble(from: .bookmark(audioStreamBookmark))
                 audioStreamBookmark = newBookmark
                 
                 guard !audioSamples.isEmpty else { return }
@@ -196,7 +196,7 @@ final class Study: ObservableObject {
                 }
                 
                 if let preprocessor = preprocessor {
-                        let (newSamples, newPreprocessorBookmark) = rawDoublesBuffer.read(sinceBookmark: preprocessorBookmark)
+                        let (newSamples, newPreprocessorBookmark) = rawDoublesBuffer.read(from: .bookmark(preprocessorBookmark))
                         preprocessorBookmark = newPreprocessorBookmark
                         
                         if !newSamples.isEmpty {
@@ -207,7 +207,7 @@ final class Study: ObservableObject {
                         }
                 }
                 
-                let (fullSamples, _) = rawDoublesBuffer.read(maxSize: store.fftSize)
+                let (fullSamples, _) = rawDoublesBuffer.read(count: store.fftSize)
                 let fullResult = fullSpectrumFFT.processFullSpectrum(
                         samples: fullSamples,
                         sampleRate: store.audioSampleRate,
@@ -217,7 +217,8 @@ final class Study: ObservableObject {
                 var basebandResult: (spectrum: ArraySlice<Double>, frequencies: ArraySlice<Double>)?
                 if let preprocessor = preprocessor, let buffer = basebandBuffer {
                         let samplesNeeded = Int(1.0 * preprocessor.fsOut)
-                        let (fftSamples, _) = buffer.read(maxSize: samplesNeeded)
+                        let (fftSamples, _) = buffer.read(count: samplesNeeded)
+                        print("Sample length: ", fftSamples.count)
                         if !fftSamples.isEmpty {
                                 basebandResult = basebandFFT.processBaseband(
                                         samples: fftSamples,
@@ -251,7 +252,7 @@ final class Study: ObservableObject {
                 }
                 
                 // Find peaks within ±50 cents of target frequency
-                let centRatio = pow(2.0, 50.0 / 1200.0) // 50 cents = 50/1200 octaves
+                let centRatio = pow(2.0, store.targetBandwidth / 1200.0) // 50 cents = 50/1200 octaves
                 let minSearchFreq = targetFreq / centRatio
                 let maxSearchFreq = targetFreq * centRatio
                 
@@ -315,8 +316,8 @@ final class Study: ObservableObject {
                         preprocessor = StreamingPreprocessor(
                                 fsOrig: store.audioSampleRate,
                                 fBaseband: basebandFreq,
-                                marginCents: 50,
-                                attenDB: 10
+                                marginCents: store.targetBandwidth,
+                                attenDB: 50
                         )
                         
                         if let pp = preprocessor {

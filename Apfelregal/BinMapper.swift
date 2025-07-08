@@ -151,7 +151,7 @@ final class BinMapper {
                 
                 let binF: Double
                 if isBaseband {
-                        binF = (inputFreq + nyquist) / freqRes
+                        binF = (inputFreq) / freqRes
                 } else {
                         binF = inputFreq / freqRes
                 }

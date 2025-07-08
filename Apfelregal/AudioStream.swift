@@ -122,12 +122,16 @@ final class AudioStream: ObservableObject {
                 }
         }
         
-        func read(maxSize: Int? = nil, sinceBookmark: Int? = nil) -> (samples: [Float], bookmark: Int) {
-                return circularBuffer.read(maxSize: maxSize, sinceBookmark: sinceBookmark)
+        func read(count: Int? = nil,
+                  from position: ReadPosition = .mostRecent,
+                  after: Int? = nil) -> (samples: [Float], bookmark: Int) {
+                return circularBuffer.read(count: count, from: position, after: after)
         }
         
-        func readAsDouble(maxSize: Int? = nil, sinceBookmark: Int? = nil) -> (samples: ArraySlice<Double>, bookmark: Int) {
-                let (floatSamples, bookmark) = circularBuffer.read(maxSize: maxSize, sinceBookmark: sinceBookmark)
+        func readAsDouble(count: Int? = nil,
+                          from position: ReadPosition = .mostRecent,
+                          after: Int? = nil) -> (samples: ArraySlice<Double>, bookmark: Int) {
+                let (floatSamples, bookmark) = circularBuffer.read(count: count, from: position, after: after)
                 
                 if floatSamples.count > conversionBuffer.count {
                         conversionBuffer = [Double](repeating: 0, count: floatSamples.count)

@@ -2,6 +2,12 @@ import Foundation
 import Atomics
 import Accelerate
 
+enum ReadPosition {
+        case mostRecent
+        case oldest
+        case bookmark(Int)
+}
+
 final class CircularBuffer<T> {
         private let buffer: UnsafeMutableBufferPointer<T>
         let capacity: Int
@@ -53,47 +59,73 @@ final class CircularBuffer<T> {
                 return newTotal
         }
         
-        func read(maxSize: Int? = nil, sinceBookmark: Int? = nil) -> (samples: [T], bookmark: Int) {
+        func read(count: Int? = nil,
+                  from position: ReadPosition = .mostRecent,
+                  after: Int? = nil) -> (samples: [T], bookmark: Int) {
+                
                 let currentTotal = totalWritten.load(ordering: .relaxed)
                 let currentWriteIdx = writeIndex.load(ordering: .relaxed)
                 
-                let samplesToRead: Int
-                if let bookmark = sinceBookmark {
-                        let available = currentTotal - bookmark
-                        if available <= 0 {
-                                return ([], currentTotal)
-                        } else if available > capacity {
-                                samplesToRead = capacity
-                        } else {
-                                samplesToRead = available
-                        }
-                } else {
-                        samplesToRead = min(currentTotal, capacity)
-                }
-                
-                let finalCount = min(samplesToRead, maxSize ?? Int.max)
-                guard finalCount > 0 else {
+                guard currentTotal > 0 else {
                         return ([], currentTotal)
                 }
                 
-                let readStart = (currentWriteIdx - finalCount + capacity) % capacity
-                var samples = [T](repeating: Self.makeZero(), count: finalCount)
+                if let afterBookmark = after, afterBookmark >= currentTotal {
+                        return ([], currentTotal)
+                }
+                
+                let availableInBuffer = min(currentTotal, capacity)
+                let oldestAvailable = max(0, currentTotal - capacity)
+                
+                let startOffset: Int
+                switch position {
+                case .mostRecent:
+                        startOffset = currentTotal
+                        
+                case .oldest:
+                        startOffset = oldestAvailable + availableInBuffer
+                        
+                case .bookmark(let bookmark):
+                        if bookmark >= currentTotal {
+                                return ([], currentTotal)
+                        }
+                        startOffset = max(bookmark + availableInBuffer, oldestAvailable + availableInBuffer)
+                }
+                
+                let effectiveStart = max(after.map { $0 + 1 } ?? oldestAvailable, oldestAvailable)
+                let readEnd = min(startOffset, currentTotal)
+                
+                guard readEnd > effectiveStart else {
+                        return ([], currentTotal)
+                }
+                
+                let maxAvailable = readEnd - effectiveStart
+                let samplesToRead = min(count ?? maxAvailable, maxAvailable)
+                
+                guard samplesToRead > 0 else {
+                        return ([], currentTotal)
+                }
+                
+                let readStart = readEnd - samplesToRead
+                let bufferStartIdx = (currentWriteIdx - (currentTotal - readStart) + capacity) % capacity
+                
+                var samples = [T](repeating: Self.makeZero(), count: samplesToRead)
                 let ptr = buffer.baseAddress!
                 
                 samples.withUnsafeMutableBufferPointer { destBuffer in
                         let destPtr = destBuffer.baseAddress!
                         
-                        if readStart + finalCount <= capacity {
+                        if bufferStartIdx + samplesToRead <= capacity {
                                 memcpy(destPtr,
-                                       ptr.advanced(by: readStart),
-                                       finalCount * MemoryLayout<T>.size)
+                                       ptr.advanced(by: bufferStartIdx),
+                                       samplesToRead * MemoryLayout<T>.size)
                         } else {
-                                let firstChunkSize = capacity - readStart
+                                let firstChunkSize = capacity - bufferStartIdx
                                 memcpy(destPtr,
-                                       ptr.advanced(by: readStart),
+                                       ptr.advanced(by: bufferStartIdx),
                                        firstChunkSize * MemoryLayout<T>.size)
                                 
-                                let secondChunkSize = finalCount - firstChunkSize
+                                let secondChunkSize = samplesToRead - firstChunkSize
                                 memcpy(destPtr.advanced(by: firstChunkSize),
                                        ptr,
                                        secondChunkSize * MemoryLayout<T>.size)

@@ -73,9 +73,26 @@ class TuningParameterStore: ObservableObject {
         let hopSize: Int = 512
         
         // MARK: - Target Pitch Settings
-        @Published var concertPitch: Double = 440.0
-        @Published var targetNote: Note = Note(name: "a1")
-        @Published var targetPartial: Int = 1
+        @Published var concertPitch: Double = 440.0 {
+                didSet {
+                        print("📻 ConcertPitch changed: \(oldValue) → \(concertPitch) Hz")
+                        print("   Target frequency now: \(targetFrequency()) Hz")
+                }
+        }
+        
+        @Published var targetNote: Note = Note(name: "a1") {
+                didSet {
+                        print("🎵 TargetNote changed: \(oldValue.name) → \(targetNote.name)")
+                        print("   Target frequency now: \(targetFrequency()) Hz")
+                }
+        }
+        
+        @Published var targetPartial: Int = 1 {
+                didSet {
+                        print("🎸 TargetPartial changed: \(oldValue) → \(targetPartial)")
+                        print("   Target frequency now: \(targetFrequency()) Hz")
+                }
+        }
         
         // MARK: - Display Settings
         @Published var displayBinCount: Int = 512
@@ -89,15 +106,26 @@ class TuningParameterStore: ObservableObject {
         // MARK: - Zoom & Viewport
         @Published var zoomState: ZoomState = .fullSpectrum {
                 didSet {
-                        updateViewportForZoom()
+                        print("🔍 ZoomState changed: \(oldValue) → \(zoomState)")
+                        updateViewportForZoom()  // No parameters - use current values
                 }
         }
         
         let fullSpectrumMinFreq: Double = 20
         let fullSpectrumMaxFreq: Double = 20_000
         
-        @Published var viewportMinFreq: Double = 20
-        @Published var viewportMaxFreq: Double = 20_000
+        @Published var viewportMinFreq: Double = 20 {
+                didSet {
+                        print("📊 ViewportMinFreq changed: \(String(format: "%.2f", oldValue)) → \(String(format: "%.2f", viewportMinFreq)) Hz")
+                }
+        }
+        
+        @Published var viewportMaxFreq: Double = 20_000 {
+                didSet {
+                        print("📊 ViewportMaxFreq changed: \(String(format: "%.2f", oldValue)) → \(String(format: "%.2f", viewportMaxFreq)) Hz")
+                        print("   Viewport range: \(String(format: "%.2f", viewportMaxFreq/viewportMinFreq))x")
+                }
+        }
         
         // MARK: - Processing Settings
         @Published var usePreprocessor: Bool = true
@@ -147,32 +175,53 @@ class TuningParameterStore: ObservableObject {
         
         private func setupViewportSubscriptions() {
                 Publishers.CombineLatest3($targetNote, $targetPartial, $concertPitch)
-                        .sink { [weak self] _, _, _ in
+                        .sink { [weak self] note, partial, pitch in
                                 guard let self = self else { return }
+                                print("🔄 Viewport subscription triggered: note=\(note.name), partial=\(partial), pitch=\(pitch)")
                                 if self.zoomState != .fullSpectrum {
-                                        self.updateViewportForZoom()
+                                        // Pass the new values directly instead of reading from properties
+                                        self.updateViewportForZoom(note: note, partial: partial, pitch: pitch)
                                 }
                         }
                         .store(in: &cancellables)
         }
         
-        private func updateViewportForZoom() {
+        private func updateViewportForZoom(note: Note? = nil, partial: Int? = nil, pitch: Double? = nil) {
+                let oldMin = viewportMinFreq
+                let oldMax = viewportMaxFreq
+                
+                // Use passed values if available, otherwise use stored values
+                let currentNote = note ?? targetNote
+                let currentPartial = partial ?? targetPartial
+                let currentPitch = pitch ?? concertPitch
+                
                 switch zoomState {
                 case .fullSpectrum:
+                        print("🔍 Updating viewport for FULL SPECTRUM")
                         viewportMinFreq = fullSpectrumMinFreq
                         viewportMaxFreq = fullSpectrumMaxFreq
                         
                 case .threeOctaves:
-                        let clampedNote = clampToPianoRange(targetNote)
-                        let targetFreq = Double(clampedNote.frequency(concertA: concertPitch)) * Double(targetPartial)
+                        let clampedNote = clampToPianoRange(currentNote)
+                        let targetFreq = Double(clampedNote.frequency(concertA: currentPitch)) * Double(currentPartial)
+                        print("🔍 Updating viewport for THREE OCTAVES")
+                        print("   Clamped note: \(clampedNote.name) (was: \(currentNote.name))")
+                        print("   Target freq: \(String(format: "%.2f", targetFreq)) Hz")
+                        
                         viewportMinFreq = targetFreq * pow(2, -50.0/1200.0)
                         viewportMaxFreq = targetFreq * pow(2, (36*100 + 50)/1200.0)
                         
                 case .targetFundamental:
-                        let centerFreq = targetFrequency()
+                        let centerFreq = Double(currentNote.frequency(concertA: currentPitch)) * Double(currentPartial)
+                        print("🔍 Updating viewport for TARGET FUNDAMENTAL")
+                        print("   Center freq: \(String(format: "%.2f", centerFreq)) Hz")
+                        
                         viewportMinFreq = centerFreq * pow(2, -50.0/1200.0)
                         viewportMaxFreq = centerFreq * pow(2, 50.0/1200.0)
                 }
+                
+                print("   Viewport: \(String(format: "%.2f-%.2f", viewportMinFreq, viewportMaxFreq)) Hz")
+                print("   Changed: \(oldMin != viewportMinFreq || oldMax != viewportMaxFreq)")
         }
         
         private func clampToPianoRange(_ note: Note) -> Note {

@@ -69,7 +69,7 @@ enum ZoomState: Int, CaseIterable {
 class TuningParameterStore: ObservableObject {
         // MARK: - Audio Configuration
         var audioSampleRate: Double = 44_100
-        let fftSize: Int = 2048 * 2
+        let fftSize: Int = 2048 * 4
         let hopSize: Int = 512
         
         // MARK: - Target Pitch Settings

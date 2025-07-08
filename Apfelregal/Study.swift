@@ -123,6 +123,54 @@ final class Study: ObservableObject {
                 }
         }
         
+        
+        private func findPeakWithCentroid(spectrum: ArraySlice<Double>,
+                                          frequencies: ArraySlice<Double>,
+                                          minFreq: Double,
+                                          maxFreq: Double) -> Double? {
+                guard spectrum.count >= 3, spectrum.count == frequencies.count else { return nil }
+                
+                var maxAmplitude = -Double.infinity
+                var maxIndex = -1
+                
+                // Search only within the frequency window
+                for (index, freq) in frequencies.enumerated() {
+                        if freq >= minFreq && freq <= maxFreq {
+                                let amplitude = spectrum[spectrum.startIndex + index]
+                                if amplitude > maxAmplitude {
+                                        maxAmplitude = amplitude
+                                        maxIndex = index
+                                }
+                        }
+                }
+                
+                guard maxIndex >= 0 else { return nil }
+                
+                let startIndex = spectrum.startIndex
+                let actualIndex = startIndex + maxIndex
+                
+                // Check bounds for centroid calculation
+                guard actualIndex > spectrum.startIndex && actualIndex < spectrum.endIndex - 1 else {
+                        return frequencies[actualIndex]
+                }
+                
+                // Centroid refinement
+                let alpha = spectrum[actualIndex - 1]  // left bin
+                let beta = spectrum[actualIndex]       // center bin (peak)
+                let gamma = spectrum[actualIndex + 1]  // right bin
+                
+                let centroidOffset = (gamma - alpha) / (alpha + beta + gamma)
+                
+                let leftFreq = frequencies[actualIndex - 1]
+                let centerFreq = frequencies[actualIndex]
+                let rightFreq = frequencies[actualIndex + 1]
+                
+                let binWidth = rightFreq - centerFreq
+                
+                return centerFreq + centroidOffset * binWidth
+        }
+
+        
         private func perform() {
                 let (audioSamples, newBookmark) = audioStream.readAsDouble(sinceBookmark: audioStreamBookmark)
                 audioStreamBookmark = newBookmark
@@ -140,7 +188,6 @@ final class Study: ObservableObject {
                 
                 processSignal()
         }
-        
         private func processSignal() {
                 let targetFreq = store.targetFrequency()
                 
@@ -171,7 +218,6 @@ final class Study: ObservableObject {
                 if let preprocessor = preprocessor, let buffer = basebandBuffer {
                         let samplesNeeded = Int(1.0 * preprocessor.fsOut)
                         let (fftSamples, _) = buffer.read(maxSize: samplesNeeded)
-                        
                         if !fftSamples.isEmpty {
                                 basebandResult = basebandFFT.processBaseband(
                                         samples: fftSamples,
@@ -204,11 +250,23 @@ final class Study: ObservableObject {
                         basebandFrequencies = Array(basebandBinMapper.frequencies)
                 }
                 
+                // Find peaks within ±50 cents of target frequency
+                let centRatio = pow(2.0, 50.0 / 1200.0) // 50 cents = 50/1200 octaves
+                let minSearchFreq = targetFreq / centRatio
+                let maxSearchFreq = targetFreq * centRatio
+                
+                let trackedPeaks = [findPeakWithCentroid(
+                        spectrum: fullResult.spectrum,
+                        frequencies: fullResult.frequencies,
+                        minFreq: minSearchFreq,
+                        maxFreq: maxSearchFreq
+                )].compactMap { $0 }
+                
                 frameCounter += 1
                 let results = StudyResults(
                         logDecimatedSpectrum: Array(logDecimatedSpectrum),
                         logDecimatedFrequencies: Array(logDecimatedFrequencies),
-                        trackedPeaks: [],
+                        trackedPeaks: trackedPeaks,
                         isBaseband: primaryIsBaseband,
                         centerFrequency: displayBaseband ? preprocessor!.fBaseband : 0,
                         sampleRate: primarySampleRate,

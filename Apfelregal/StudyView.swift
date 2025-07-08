@@ -97,10 +97,33 @@ struct GraphView: View {
                 Canvas { context, canvasSize in
                         drawGrid(context: context, size: canvasSize)
                         drawSpectrum(context: context, size: canvasSize)
+                        drawPeakLine(context: context, size: canvasSize)  // Add this line
                         drawAxes(context: context, size: canvasSize)
                 }
         }
-        
+        private func drawPeakLine(context: GraphicsContext, size: CGSize) {
+                guard let results = study.results,
+                      !results.trackedPeaks.isEmpty,
+                      let peakFreq = results.trackedPeaks.first else { return }
+                
+                let freqRange = frequencyRange
+                print("Peak ", peakFreq)
+                
+                // Only draw if peak is within viewport
+                guard peakFreq >= freqRange.lowerBound && peakFreq <= freqRange.upperBound else { return }
+                
+                let x = frequencyToX(peakFreq, size: size.width)
+                
+                context.stroke(
+                        Path { path in
+                                path.move(to: CGPoint(x: x, y: 0))
+                                path.addLine(to: CGPoint(x: x, y: size.height))
+                        },
+                        with: .color(.yellow),
+                        lineWidth: 0.5
+                )
+        }
+
         private func drawSpectrum(context: GraphicsContext, size: CGSize) {
                 guard !smoothedSpectrum.isEmpty,
                       !currentFrequencies.isEmpty,

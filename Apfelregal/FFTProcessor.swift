@@ -23,7 +23,7 @@ final class FFTProcessor {
         private let windowBuffer: UnsafeMutablePointer<Double>
         private let windowedRealBuffer: UnsafeMutablePointer<Double>
         private let windowedImagBuffer: UnsafeMutablePointer<Double>
-        private let magnitudeBuffer: UnsafeMutablePointer<Double>
+        private let amplitudeBuffer: UnsafeMutablePointer<Double>
         
         private let outputSpectrumBuffer: UnsafeMutablePointer<Double>
         private let outputFrequencyBuffer: UnsafeMutablePointer<Double>
@@ -57,12 +57,12 @@ final class FFTProcessor {
                 self.windowBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
                 self.windowedRealBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
                 self.windowedImagBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
-                self.magnitudeBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
+                self.amplitudeBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
                 
                 self.outputSpectrumBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
                 self.outputFrequencyBuffer = UnsafeMutablePointer<Double>.allocate(capacity: fftSize)
                 
-                self.magnitudeBuffer.initialize(repeating: 0, count: fftSize)
+                self.amplitudeBuffer.initialize(repeating: 0, count: fftSize)
                 self.windowedImagBuffer.initialize(repeating: 0, count: fftSize)
                 self.outputSpectrumBuffer.initialize(repeating: 0, count: fftSize)
                 self.outputFrequencyBuffer.initialize(repeating: 0, count: fftSize)
@@ -80,7 +80,7 @@ final class FFTProcessor {
                 windowBuffer.deallocate()
                 windowedRealBuffer.deallocate()
                 windowedImagBuffer.deallocate()
-                magnitudeBuffer.deallocate()
+                amplitudeBuffer.deallocate()
                 outputSpectrumBuffer.deallocate()
                 outputFrequencyBuffer.deallocate()
         }
@@ -96,7 +96,7 @@ final class FFTProcessor {
                 )
                 
                 generateFullSpectrumFrequencies(sampleRate: sampleRate)
-                convertToDBAndCopyResults(count: halfSize)
+                normalizeAndConvertToDB(count: halfSize + 1, actualSampleCount: actualSampleCount, applyWindow: applyWindow, singleSided: true)
                 
                 let spectrumSlice = outputSpectrumBuffer.withMemoryRebound(to: Double.self, capacity: halfSize) { ptr in
                         ArraySlice(UnsafeBufferPointer(start: ptr, count: halfSize))
@@ -125,7 +125,7 @@ final class FFTProcessor {
                 )
                 
                 generateBasebandFrequencies(basebandFreq: basebandFreq, sampleRate: decimatedRate)
-                convertToDBAndCopyResults(count: fftSize)
+                normalizeAndConvertToDB(count: fftSize, actualSampleCount: actualSampleCount, applyWindow: applyWindow, singleSided: false)
                 reorderBasebandSpectrum()
                 
                 let spectrumSlice = outputSpectrumBuffer.withMemoryRebound(to: Double.self, capacity: fftSize) { ptr in
@@ -182,23 +182,42 @@ final class FFTProcessor {
                         FFTDirection(FFT_FORWARD)
                 )
                 
+                vDSP_zvabsD(&splitComplex, 1, amplitudeBuffer, 1, vDSP_Length(fftSize))
+        }
+        
+        private func normalizeAndConvertToDB(count: Int, actualSampleCount: Int, applyWindow: Bool, singleSided: Bool) {
+                var invL = 1.0 / Double(actualSampleCount)
                 
-                vDSP_zvmagsD(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(fftSize))
-                
-                var scaleFactor = 1.0 / Double(actualSampleCount)  //    Normalize by actual samples, not FFT size
-
-                
-                if applyWindow && samplesToUse > 0 {
+                if applyWindow && actualSampleCount > 0 {
                         var windowSum: Double = 0
-                        vDSP_sveD(windowBuffer, 1, &windowSum, vDSP_Length(samplesToUse))
-                        let windowMean = windowSum / Double(samplesToUse)
-                        scaleFactor /= windowMean
+                        vDSP_sveD(windowBuffer, 1, &windowSum, vDSP_Length(actualSampleCount))
+                        let coherentGain = windowSum / Double(actualSampleCount)
+                        invL /= coherentGain
                 }
                 
-                vDSP_vsmulD(magnitudeBuffer, 1, &scaleFactor, magnitudeBuffer, 1, vDSP_Length(fftSize))
+                if singleSided {
+                        amplitudeBuffer[0] *= invL
+                        if halfSize < count {
+                                amplitudeBuffer[halfSize] *= invL
+                        }
+                        
+                        var twoInvL = 2.0 * invL
+                        let nonDCCount = min(halfSize - 1, count - 1)
+                        if nonDCCount > 0 {
+                                vDSP_vsmulD(amplitudeBuffer + 1, 1, &twoInvL, amplitudeBuffer + 1, 1, vDSP_Length(nonDCCount))
+                        }
+                        
+                        memcpy(outputSpectrumBuffer, amplitudeBuffer, count * MemoryLayout<Double>.size)
+                } else {
+                        vDSP_vsmulD(amplitudeBuffer, 1, &invL, outputSpectrumBuffer, 1, vDSP_Length(count))
+                }
                 
-                var count_int = Int32(fftSize)
-                vvsqrt(magnitudeBuffer, magnitudeBuffer, &count_int)
+                var floorDB: Double = 1e-10
+                var ceilingDB: Double = .greatestFiniteMagnitude
+                vDSP_vclipD(outputSpectrumBuffer, 1, &floorDB, &ceilingDB, outputSpectrumBuffer, 1, vDSP_Length(count))
+                
+                var reference: Double = 1.0
+                vDSP_vdbconD(outputSpectrumBuffer, 1, &reference, outputSpectrumBuffer, 1, vDSP_Length(count), 1)
         }
         
         private func generateFullSpectrumFrequencies(sampleRate: Double) {
@@ -229,17 +248,6 @@ final class FFTProcessor {
                 lastSampleRate = sampleRate
                 lastBasebandFreq = basebandFreq
                 lastIsBaseband = true
-        }
-        
-        private func convertToDBAndCopyResults(count: Int) {
-                memcpy(outputSpectrumBuffer, magnitudeBuffer, count * MemoryLayout<Double>.size)
-                
-                var floorDB: Double = 1e-10
-                var ceilingDB: Double = .greatestFiniteMagnitude
-                vDSP_vclipD(outputSpectrumBuffer, 1, &floorDB, &ceilingDB, outputSpectrumBuffer, 1, vDSP_Length(count))
-                
-                var reference: Double = 1.0
-                vDSP_vdbconD(outputSpectrumBuffer, 1, &reference, outputSpectrumBuffer, 1, vDSP_Length(count), 1)
         }
         
         private func reorderBasebandSpectrum() {

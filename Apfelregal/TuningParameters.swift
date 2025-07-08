@@ -118,6 +118,14 @@ class TuningParameterStore: ObservableObject {
         
         @Published var centsError: Double = 0.0
         
+        private var cancellables = Set<AnyCancellable>()
+        
+        // MARK: - Initialization
+        
+        init() {
+                setupViewportSubscriptions()
+        }
+        
         // MARK: - Computed Properties
         var nyquistFrequency: Double {
                 audioSampleRate * 0.5
@@ -135,6 +143,19 @@ class TuningParameterStore: ObservableObject {
                 Double(targetNote.frequency(concertA: concertPitch))
         }
         
+        // MARK: - Private Methods
+        
+        private func setupViewportSubscriptions() {
+                Publishers.CombineLatest3($targetNote, $targetPartial, $concertPitch)
+                        .sink { [weak self] _, _, _ in
+                                guard let self = self else { return }
+                                if self.zoomState != .fullSpectrum {
+                                        self.updateViewportForZoom()
+                                }
+                        }
+                        .store(in: &cancellables)
+        }
+        
         private func updateViewportForZoom() {
                 switch zoomState {
                 case .fullSpectrum:
@@ -142,15 +163,28 @@ class TuningParameterStore: ObservableObject {
                         viewportMaxFreq = fullSpectrumMaxFreq
                         
                 case .threeOctaves:
-                        let baseFreq = targetNote.transposed(by: -1).frequency(concertA: concertPitch)
-                        let maxFreq = targetNote.transposed(by: 12 * 3).frequency(concertA: concertPitch)
-                        viewportMinFreq = Double(baseFreq)
-                        viewportMaxFreq = min(Double(maxFreq), fullSpectrumMaxFreq)
+                        let clampedNote = clampToPianoRange(targetNote)
+                        let targetFreq = Double(clampedNote.frequency(concertA: concertPitch)) * Double(targetPartial)
+                        viewportMinFreq = targetFreq * pow(2, -50.0/1200.0)
+                        viewportMaxFreq = targetFreq * pow(2, (36*100 + 50)/1200.0)
                         
                 case .targetFundamental:
                         let centerFreq = targetFrequency()
                         viewportMinFreq = centerFreq * pow(2, -50.0/1200.0)
                         viewportMaxFreq = centerFreq * pow(2, 50.0/1200.0)
+                }
+        }
+        
+        private func clampToPianoRange(_ note: Note) -> Note {
+                let a0 = Note(name: "A0")
+                let c8 = Note(name: "C8")
+                
+                if note < a0 {
+                        return a0
+                } else if note > c8 {
+                        return c8
+                } else {
+                        return note
                 }
         }
         

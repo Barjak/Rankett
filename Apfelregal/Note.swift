@@ -1,6 +1,6 @@
 import Foundation
 
-struct Note: Equatable, Hashable {
+struct Note: Equatable, Hashable, Comparable {
         let name: String
         let octave: Int
         let midiNumber: Int
@@ -16,6 +16,10 @@ struct Note: Equatable, Hashable {
         var displayName: String {
                 let noteIndex = midiNumber % 12
                 return Self.displayNames[noteIndex]
+        }
+        
+        static func < (lhs: Note, rhs: Note) -> Bool {
+                return lhs.midiNumber < rhs.midiNumber
         }
         
         init(midiNumber: Int) {

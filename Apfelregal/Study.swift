@@ -1,4 +1,3 @@
-// Study.swift
 import Foundation
 import SwiftUICore
 import Accelerate
@@ -18,43 +17,32 @@ struct StudyResults {
         let frameNumber: Int
 }
 
-// Study.swift changes
-
 final class Study: ObservableObject {
-        // Core components
         private let audioStream: AudioStream
         private let store: TuningParameterStore
         private let fftProcessor: FFTProcessor
         private var frameCounter = 0
         
-        // Preprocessing components
         private var preprocessor: StreamingPreprocessor?
         private var rawBuffer: CircularBuffer<Double>
         private var basebandBuffer: CircularBuffer<DSPDoubleComplex>?
         
-        // Processing queue
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
-        // State
         var isRunning = false
         private let updateRate: Double = 60.0
         private let fftRate: Double = 30.0
         private var lastFFTTime: CFAbsoluteTime = 0
         
-        // Bookmarks for continuous reading
         private var audioStreamBookmark: Int = 0
         private var preprocessorBookmark: Int = 0
         
-        // Thread-safe results
         @Published var results: StudyResults?
         private let resultsLock = NSLock()
         private var resultsBuffer: StudyResults?
         
-        // Internal FFT results
-        private var fullSpectrum: [Double] = []
-        private var fullFrequencies: [Double] = []
+        private var binMapper: BinMapper
         
-        // Combine subscriptions
         private var cancellables = Set<AnyCancellable>()
         
         init(store: TuningParameterStore) {
@@ -63,14 +51,25 @@ final class Study: ObservableObject {
                 self.rawBuffer = CircularBuffer<Double>(capacity: store.circularBufferSize)
                 self.fftProcessor = FFTProcessor(fftSize: store.fftSize)
                 
+                self.binMapper = BinMapper(
+                        binCount: store.displayBinCount,
+                        halfSize: store.fftSize / 2,
+                        sampleRate: store.audioSampleRate,
+                        useLogScale: false,
+                        minFreq: 20,
+                        maxFreq: 20000,
+                        heterodyneOffset: 0,
+                        smoothingFactor: 0.0
+                )
+                
                 setupSubscriptions()
         }
         
         private func setupSubscriptions() {
                 Publishers.CombineLatest3(
-                        store.$zoomState,
                         store.$targetNote,
-                        store.$concertPitch
+                        store.$concertPitch,
+                        store.$targetPartial
                 )
                 .sink { [weak self] _, _, _ in
                         self?.studyQueue.async {
@@ -80,10 +79,8 @@ final class Study: ObservableObject {
                 .store(in: &cancellables)
         }
         
-        // MARK: - Start / Stop
-        
         func start() {
-                guard !self.isRunning else { return }
+                guard !isRunning else { return }
                 
                 updatePreprocessor()
                 audioStream.start()
@@ -98,8 +95,6 @@ final class Study: ObservableObject {
                 isRunning = false
                 audioStream.stop()
         }
-        
-        // MARK: - Main Processing Loop
         
         private func processingLoop() {
                 while isRunning {
@@ -128,15 +123,12 @@ final class Study: ObservableObject {
                 processSignal()
         }
         
-        // MARK: - Unified Processing
-        
         private func processSignal() {
                 if let preprocessor = preprocessor {
                         let (newSamples, newPreprocessorBookmark) = rawBuffer.read(sinceBookmark: preprocessorBookmark)
                         preprocessorBookmark = newPreprocessorBookmark
                         
                         if !newSamples.isEmpty {
-
                                 let basebandSamples = preprocessor.process(samples: newSamples)
                                 if !basebandSamples.isEmpty {
                                         basebandBuffer?.write(basebandSamples)
@@ -158,14 +150,8 @@ final class Study: ObservableObject {
                         }
                         
                         let samplesNeeded = Int(1.0 * preprocessor.fsOut)
-                        
                         let (fftSamples, _) = buffer.read(maxSize: samplesNeeded)
                         
-                        guard !fftSamples.isEmpty else {
-                                publishEmptyResults()
-                                return
-                        }
-                        // In processSignal(), before calling fftProcessor.processBaseband:
                         let result = fftProcessor.processBaseband(
                                 samples: fftSamples,
                                 basebandFreq: preprocessor.fBaseband,
@@ -181,10 +167,6 @@ final class Study: ObservableObject {
                         
                 } else {
                         let (samples, _) = rawBuffer.read(maxSize: store.fftSize)
-                        guard !samples.isEmpty else {
-                                publishEmptyResults()
-                                return
-                        }
                         
                         let result = fftProcessor.processFullSpectrum(
                                 samples: samples,
@@ -199,19 +181,11 @@ final class Study: ObservableObject {
                         sampleRate = store.audioSampleRate
                 }
                 
-                fullSpectrum = Array(spectrum)
-                fullFrequencies = Array(frequencies)
-                
-                let binMapper = createBinMapper(
-                        isBaseband: isBaseband,
-                        sampleRate: sampleRate,
-                        spectrumSize: spectrum.count
-                )
-                
+                updateBinMapper(isBaseband: isBaseband, sampleRate: sampleRate, spectrumSize: spectrum.count)
                 
                 let logDecimatedSpectrum = binMapper.mapSpectrum(spectrum)
                 let logDecimatedFrequencies = binMapper.frequencies
-                        
+                
                 frameCounter += 1
                 let results = StudyResults(
                         logDecimatedSpectrum: Array(logDecimatedSpectrum),
@@ -220,7 +194,7 @@ final class Study: ObservableObject {
                         isBaseband: isBaseband,
                         centerFrequency: centerFreq,
                         sampleRate: sampleRate,
-                        filterBandwidth: isBaseband ?
+                        filterBandwidth: isBaseband && preprocessor != nil ?
                         (min: centerFreq - preprocessor!.bandwidth/2,
                          max: centerFreq + preprocessor!.bandwidth/2) :
                                 (min: 0, max: store.audioSampleRate / 2),
@@ -230,7 +204,32 @@ final class Study: ObservableObject {
                 publishResults(results)
         }
         
-        // MARK: - Update Methods
+        private func updateBinMapper(isBaseband: Bool, sampleRate: Double, spectrumSize: Int) {
+                let useLog = store.useLogFrequencyScale &&
+                (store.viewportMaxFreq / store.viewportMinFreq) > 2.0 &&
+                store.zoomState != .targetFundamental
+                
+                if store.zoomState == .targetFundamental && isBaseband, let pp = preprocessor {
+                        let bandwidth = pp.bandwidth
+                        binMapper.remap(
+                                minFreq: pp.fBaseband - bandwidth/2,
+                                maxFreq: pp.fBaseband + bandwidth/2,
+                                heterodyneOffset: pp.fBaseband,
+                                sampleRate: sampleRate,
+                                halfSize: spectrumSize,
+                                useLogScale: false
+                        )
+                } else {
+                        binMapper.remap(
+                                minFreq: store.viewportMinFreq,
+                                maxFreq: store.viewportMaxFreq,
+                                heterodyneOffset: 0,
+                                sampleRate: sampleRate,
+                                halfSize: spectrumSize,
+                                useLogScale: useLog
+                        )
+                }
+        }
         
         private func updatePreprocessor() {
                 let basebandFreq = store.targetFrequency()
@@ -239,7 +238,6 @@ final class Study: ObservableObject {
                 abs(preprocessor!.fBaseband - basebandFreq) > 1.0
                 
                 if needsUpdate {
-                        print("🔧 Creating preprocessor for \(basebandFreq) Hz")
                         preprocessor = StreamingPreprocessor(
                                 fsOrig: store.audioSampleRate,
                                 fBaseband: basebandFreq,
@@ -248,59 +246,13 @@ final class Study: ObservableObject {
                         )
                         
                         if let pp = preprocessor {
-                                print("🔧 Preprocessor: decimation=\(pp.decimationFactor), fsOut=\(pp.fsOut), bandwidth=\(pp.bandwidth)")
-                                
                                 let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))
                                 basebandBuffer = CircularBuffer<DSPDoubleComplex>(capacity: decimatedBufferSize)
-                                
-                                let (availableSamples, _) = rawBuffer.read()
-                                print("🔧 Processing \(availableSamples.count) existing samples")
-                                
-                                if !availableSamples.isEmpty {
-                                        let basebandSamples = pp.process(samples: availableSamples)
-                                        if !basebandSamples.isEmpty {
-                                                print("🔧 Pre-filled buffer with \(basebandSamples.count) baseband samples")
-                                                basebandBuffer?.write(basebandSamples)
-                                        }
-                                }
-                                
                                 preprocessorBookmark = rawBuffer.getTotalWritten()
                         }
                 }
         }
-        private func createBinMapper(isBaseband: Bool, sampleRate: Double, spectrumSize: Int) -> BinMapper {
-                let minFreq: Double
-                let maxFreq: Double
-                let useLog: Bool
-                let heterodyneOffset: Double
-                
-                if store.zoomState == .targetFundamental && isBaseband, let pp = preprocessor {
-                        let bandwidth = pp.bandwidth
-                        minFreq = pp.fBaseband - bandwidth/2
-                        maxFreq = pp.fBaseband + bandwidth/2
-                        useLog = false
-                        heterodyneOffset = pp.fBaseband
-                        print("🗺️ BinMapper baseband: \(minFreq)-\(maxFreq) Hz, linear scale")
-                } else {
-                        minFreq = store.viewportMinFreq
-                        maxFreq = store.viewportMaxFreq
-                        useLog = store.useLogFrequencyScale && (maxFreq / minFreq) > 2.0
-                        heterodyneOffset = 0
-                        print("🗺️ BinMapper full: \(minFreq)-\(maxFreq) Hz, \(useLog ? "log" : "linear") scale")
-
-                }
-                
-                return BinMapper(
-                        binCount: store.displayBinCount,
-                        halfSize: spectrumSize,
-                        sampleRate: sampleRate,
-                        useLogScale: useLog,
-                        minFreq: minFreq,
-                        maxFreq: maxFreq,
-                        heterodyneOffset: heterodyneOffset
-                )
-        }
-
+        
         private func publishResults(_ newResults: StudyResults) {
                 resultsLock.lock()
                 resultsBuffer = newResults
@@ -312,11 +264,12 @@ final class Study: ObservableObject {
                         self?.resultsLock.unlock()
                 }
         }
+        
         private func publishEmptyResults() {
                 frameCounter += 1
                 let emptyResults = StudyResults(
-                        logDecimatedSpectrum: [],
-                        logDecimatedFrequencies: [],
+                        logDecimatedSpectrum: Array(repeating: -80.0, count: store.displayBinCount),
+                        logDecimatedFrequencies: Array(repeating: 0.0, count: store.displayBinCount),
                         trackedPeaks: [],
                         isBaseband: store.zoomState == .targetFundamental,
                         centerFrequency: store.targetFrequency(),

@@ -50,24 +50,6 @@ class StreamingPreprocessor {
                         attenDB: attenDB
                 )
                 
-                print("🔍 Filter design: order=\(sections), decimation=\(decimationFactor)")
-                for (i, section) in sos.enumerated() {
-                        print("🔍 Section \(i): b=[\(section[0]), \(section[1]), \(section[2])], a=[1.0, \(section[3]), \(section[4])]")
-                        
-                        // Check pole magnitudes for stability
-                        let a1 = section[3]
-                        let a2 = section[4]
-                        // For transfer function 1 + a1*z^-1 + a2*z^-2, poles are roots of z^2 + a1*z + a2
-                        let discriminant = a1 * a1 - 4 * a2
-                        if discriminant >= 0 {
-                                let p1 = (-a1 + sqrt(discriminant)) / 2
-                                let p2 = (-a1 - sqrt(discriminant)) / 2
-                                print("🔍   Real poles: \(p1), \(p2), magnitudes: \(abs(p1)), \(abs(p2))")
-                        } else {
-                                let mag = sqrt(a2)
-                                print("🔍   Complex poles with magnitude: \(mag)")
-                        }
-                }
                 
                 self.sosCoefficients = sos
                 self.sectionCount = sections

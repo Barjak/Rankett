@@ -182,25 +182,11 @@ final class FFTProcessor {
                         FFTDirection(FFT_FORWARD)
                 )
                 
-                // Add diagnostics here:
-                var maxReal: Double = 0
-                var maxImag: Double = 0
-                vDSP_maxvD(splitComplex.realp, 1, &maxReal, vDSP_Length(fftSize))
-                vDSP_maxvD(splitComplex.imagp, 1, &maxImag, vDSP_Length(fftSize))
-                print("🔍 Post-FFT max: real=\(maxReal), imag=\(maxImag)")
-                
-                var minReal: Double = 0
-                var minImag: Double = 0
-                vDSP_minvD(splitComplex.realp, 1, &minReal, vDSP_Length(fftSize))
-                vDSP_minvD(splitComplex.imagp, 1, &minImag, vDSP_Length(fftSize))
-                print("🔍 Post-FFT min: real=\(minReal), imag=\(maxImag)")
                 
                 vDSP_zvmagsD(&splitComplex, 1, magnitudeBuffer, 1, vDSP_Length(fftSize))
                 
-                var maxMagBeforeScale: Double = 0
-                vDSP_maxvD(magnitudeBuffer, 1, &maxMagBeforeScale, vDSP_Length(fftSize))
-                print("🔍 Max squared magnitude: \(maxMagBeforeScale)")
-                               var scaleFactor = 1.0 / Double(fftSize)
+                var scaleFactor = 1.0 / Double(actualSampleCount)  //    Normalize by actual samples, not FFT size
+
                 
                 if applyWindow && samplesToUse > 0 {
                         var windowSum: Double = 0

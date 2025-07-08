@@ -316,7 +316,7 @@ final class Study: ObservableObject {
                                 fsOrig: store.audioSampleRate,
                                 fBaseband: basebandFreq,
                                 marginCents: 50,
-                                attenDB: 30
+                                attenDB: 10
                         )
                         
                         if let pp = preprocessor {

@@ -186,7 +186,8 @@ final class FFTProcessor {
         }
         
         private func normalizeAndConvertToDB(count: Int, actualSampleCount: Int, applyWindow: Bool, singleSided: Bool) {
-                var invL = 1.0 / Double(actualSampleCount)
+                
+                var invL = 1.0 / Double(singleSided ? actualSampleCount : fftSize)
                 
                 if applyWindow && actualSampleCount > 0 {
                         var windowSum: Double = 0
@@ -211,7 +212,8 @@ final class FFTProcessor {
                 } else {
                         vDSP_vsmulD(amplitudeBuffer, 1, &invL, outputSpectrumBuffer, 1, vDSP_Length(count))
                 }
-                
+                print("Baseband normalization: actualSamples=\(actualSampleCount), fftSize=\(fftSize), invL=\(invL)")
+                print("First few amplitudes before dB: ", amplitudeBuffer[0],  amplitudeBuffer[1], amplitudeBuffer[2], amplitudeBuffer[3])
                 var floorDB: Double = 1e-10
                 var ceilingDB: Double = .greatestFiniteMagnitude
                 vDSP_vclipD(outputSpectrumBuffer, 1, &floorDB, &ceilingDB, outputSpectrumBuffer, 1, vDSP_Length(count))

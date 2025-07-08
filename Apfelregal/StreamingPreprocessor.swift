@@ -50,7 +50,6 @@ class StreamingPreprocessor {
                         attenDB: attenDB
                 )
                 
-                
                 self.sosCoefficients = sos
                 self.sectionCount = sections
                 
@@ -84,7 +83,6 @@ class StreamingPreprocessor {
         }
         
         func process(samples: [Double]) -> [DSPDoubleComplex] {
-                
                 let count = samples.count
                 guard count > 0 else { return [] }
                 
@@ -99,7 +97,7 @@ class StreamingPreprocessor {
                         }
                         return result
                 }
-
+                
                 heterodyneToBaseband(samples: samples, output: heterodyneSplitBuffer, count: count)
                 applyIIRFilter(input: heterodyneSplitBuffer, output: iirOutputSplitBuffer, count: count)
                 return performDecimation(input: iirOutputSplitBuffer, inputCount: count)
@@ -178,17 +176,22 @@ class StreamingPreprocessor {
                 let n = butterworthOrder(wp: wp, ws: ws, gpass: 0.5, gstop: attenDB)
                 let (poles, gain) = butterworthAnalogPrototype(order: n)
                 
-                let wpw = 2 * fsOrig * tan(.pi * wp / 2)
+                let wpRad = 2 * .pi * wp * nyquist
                 let scaledPoles = poles.map { p in
-                        DSPDoubleComplex(real: p.real * wpw,
-                                         imag: p.imag * wpw)
+                        DSPDoubleComplex(real: p.real * wpRad, imag: p.imag * wpRad)
                 }
                 
-                let (zPoles, zGain) = bilinearTransform(poles: scaledPoles, zeros: [], gain: gain, fs: fsOrig)
+                let scaledGain = gain * pow(wpRad, Double(n))
+                let (zPoles, zGain) = bilinearTransform(
+                        poles: scaledPoles,
+                        zeros: [],
+                        gain: scaledGain,
+                        fs: fsOrig,
+                        order: n
+                )
                 
-                let sos = zpk2sos(zeros: Array(repeating: DSPDoubleComplex(real: -1, imag: 0), count: n),
-                                  poles: zPoles,
-                                  gain: zGain)
+                let digitalZeros = Array(repeating: DSPDoubleComplex(real: -1, imag: 0), count: n)
+                let sos = zpk2sos(zeros: digitalZeros, poles: zPoles, gain: zGain)
                 
                 return (sos, sos.count)
         }
@@ -217,7 +220,7 @@ class StreamingPreprocessor {
                 return (poles, 1.0)
         }
         
-        private static func bilinearTransform(poles: [DSPDoubleComplex], zeros: [DSPDoubleComplex], gain: Double, fs: Double) -> ([DSPDoubleComplex], Double) {
+        private static func bilinearTransform(poles: [DSPDoubleComplex], zeros: [DSPDoubleComplex], gain: Double, fs: Double, order: Int) -> ([DSPDoubleComplex], Double) {
                 let fs2 = 2.0 * fs
                 
                 let zPoles = poles.map { p -> DSPDoubleComplex in
@@ -226,13 +229,20 @@ class StreamingPreprocessor {
                         return complexDivide(num, den)
                 }
                 
-                let degree = poles.count - zeros.count
-                
-                var zGain = gain
-                for p in poles {
-                        zGain *= sqrt(pow(fs2 - p.real, 2) + pow(p.imag, 2))
+                var numerator = gain
+                for z in zeros {
+                        numerator *= sqrt(pow(fs2 - z.real, 2) + pow(z.imag, 2))
                 }
-                zGain /= pow(fs2, Double(degree))
+                
+                var denominator = 1.0
+                for p in poles {
+                        denominator *= sqrt(pow(fs2 - p.real, 2) + pow(p.imag, 2))
+                }
+                
+                let degreeDeficit = poles.count - zeros.count
+                denominator *= pow(fs2, Double(degreeDeficit))
+                
+                let zGain = numerator / denominator
                 
                 return (zPoles, zGain)
         }
@@ -245,46 +255,72 @@ class StreamingPreprocessor {
                 while remainingPoles.count >= 2 {
                         let p1 = remainingPoles.removeFirst()
                         
-                        if let conjIndex = remainingPoles.firstIndex(where: { abs($0.real - p1.real) < 1e-6 && abs($0.imag + p1.imag) < 1e-6 }) {
+                        if let conjIndex = remainingPoles.firstIndex(where: { abs($0.real - p1.real) < 1e-10 && abs($0.imag + p1.imag) < 1e-10 }) {
                                 let p2 = remainingPoles.remove(at: conjIndex)
                                 
                                 let z1 = remainingZeros.isEmpty ? DSPDoubleComplex(real: -1, imag: 0) : remainingZeros.removeFirst()
                                 let z2 = remainingZeros.isEmpty ? DSPDoubleComplex(real: -1, imag: 0) : remainingZeros.removeFirst()
                                 
-                                let b0: Double = 1.0
-                                let b1: Double = -(z1.real + z2.real)
-                                let b2: Double = complexMultiply(z1, z2).real
+                                let b0 = 1.0
+                                let b1 = -(z1.real + z2.real)
+                                let b2 = complexMultiply(z1, z2).real
                                 
-                                let a1: Double = -(p1.real + p2.real)
-                                let a2: Double = complexMultiply(p1, p2).real
+                                let a1 = -(p1.real + p2.real)
+                                let a2 = complexMultiply(p1, p2).real
                                 
                                 sections.append([b0, b1, b2, a1, a2])
+                        } else {
+                                let z1 = remainingZeros.isEmpty ? DSPDoubleComplex(real: -1, imag: 0) : remainingZeros.removeFirst()
+                                sections.append([1.0, -z1.real, 0, -p1.real, 0])
                         }
                 }
                 
-                if !remainingPoles.isEmpty {
+                if remainingPoles.count == 1 {
                         let p = remainingPoles.removeFirst()
                         let z = remainingZeros.isEmpty ? DSPDoubleComplex(real: -1, imag: 0) : remainingZeros.removeFirst()
                         sections.append([1.0, -z.real, 0, -p.real, 0])
                 }
                 
-                if !sections.isEmpty {
-                        sections[0][0] *= gain
-                        sections[0][1] *= gain
-                        sections[0][2] *= gain
+                if sections.isEmpty {
+                        return []
+                }
+                
+                let gainPerSection = pow(gain, 1.0 / Double(sections.count))
+                for i in 0..<sections.count {
+                        sections[i][0] *= gainPerSection
+                        sections[i][1] *= gainPerSection
+                        sections[i][2] *= gainPerSection
+                }
+                
+                for i in 0..<sections.count {
+                        let b0 = sections[i][0]
+                        let b1 = sections[i][1]
+                        let b2 = sections[i][2]
+                        let a1 = sections[i][3]
+                        let a2 = sections[i][4]
+                        
+                        let dcGain = (b0 + b1 + b2) / (1.0 + a1 + a2)
+                        
+                        sections[i][0] /= dcGain
+                        sections[i][1] /= dcGain
+                        sections[i][2] /= dcGain
                 }
                 
                 return sections
         }
         
         private static func complexMultiply(_ a: DSPDoubleComplex, _ b: DSPDoubleComplex) -> DSPDoubleComplex {
-                return DSPDoubleComplex(real: a.real * b.real - a.imag * b.imag,
-                                        imag: a.real * b.imag + a.imag * b.real)
+                return DSPDoubleComplex(
+                        real: a.real * b.real - a.imag * b.imag,
+                        imag: a.real * b.imag + a.imag * b.real
+                )
         }
         
         private static func complexDivide(_ a: DSPDoubleComplex, _ b: DSPDoubleComplex) -> DSPDoubleComplex {
                 let denominator = b.real * b.real + b.imag * b.imag
-                return DSPDoubleComplex(real: (a.real * b.real + a.imag * b.imag) / denominator,
-                                        imag: (a.imag * b.real - a.real * b.imag) / denominator)
+                return DSPDoubleComplex(
+                        real: (a.real * b.real + a.imag * b.imag) / denominator,
+                        imag: (a.imag * b.real - a.real * b.imag) / denominator
+                )
         }
 }

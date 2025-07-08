@@ -100,8 +100,8 @@ class TuningParameterStore: ObservableObject {
         @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
-        let minDB: Double = -100.0
-        let maxDB: Double = 250.0
+        let minDB: Double = -150.0
+        let maxDB: Double = 0.0
         
         // MARK: - Zoom & Viewport
         @Published var zoomState: ZoomState = .fullSpectrum {

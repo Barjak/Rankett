@@ -16,8 +16,8 @@ struct StudyResults {
         
         let frameNumber: Int
         
-        // Optional baseband spectrum for dual processing
         let basebandSpectrum: [Double]?
+        let basebandMUSIC: [Double]?
         let basebandFrequencies: [Double]?
 }
 
@@ -26,6 +26,7 @@ final class Study: ObservableObject {
         private let store: TuningParameterStore
         private let fullSpectrumFFT: FFTProcessor
         private let basebandFFT: FFTProcessor
+        private let basebandMUSIC: MUSICProcessor
         private var frameCounter = 0
         
         private var preprocessor: StreamingPreprocessor?
@@ -48,6 +49,7 @@ final class Study: ObservableObject {
         
         private var fullSpectrumBinMapper: BinMapper
         private var basebandBinMapper: BinMapper
+        private var musicBinMapper: BinMapper
         
         private var cancellables = Set<AnyCancellable>()
         
@@ -57,6 +59,8 @@ final class Study: ObservableObject {
                 self.rawDoublesBuffer = CircularBuffer<Double>(capacity: store.circularBufferSize)
                 self.fullSpectrumFFT = FFTProcessor(fftSize: store.fftSize)
                 self.basebandFFT = FFTProcessor(fftSize: store.fftSize)
+                self.basebandMUSIC = MUSICProcessor(sourceCount: store.musicSourceCount,
+                                                    gridResolution: store.musicGridResolution)
                 
                 self.fullSpectrumBinMapper = BinMapper(
                         binCount: store.displayBinCount,
@@ -72,6 +76,17 @@ final class Study: ObservableObject {
                 self.basebandBinMapper = BinMapper(
                         binCount: store.displayBinCount,
                         halfSize: store.fftSize,
+                        sampleRate: store.audioSampleRate,
+                        useLogScale: false,
+                        minFreq: 20,
+                        maxFreq: 20000,
+                        heterodyneOffset: 0,
+                        smoothingFactor: 0.0
+                )
+                
+                self.musicBinMapper = BinMapper(
+                        binCount: store.displayBinCount,
+                        halfSize: store.musicGridResolution,
                         sampleRate: store.audioSampleRate,
                         useLogScale: false,
                         minFreq: 20,
@@ -123,6 +138,17 @@ final class Study: ObservableObject {
                 }
         }
         
+        private func computeMUSICParameters(sampleCount: Int) -> (subarrayLength: Int, snapshotCount: Int)? {
+                guard sampleCount >= store.musicMinSamples else { return nil }
+                
+                let subarrayLength = sampleCount / 3
+                guard subarrayLength > store.musicSourceCount else { return nil }
+                
+                let maxSnapshots = sampleCount - subarrayLength + 1
+                let snapshotCount = min(maxSnapshots, sampleCount / 2)
+                
+                return (subarrayLength, snapshotCount)
+        }
         
         private func findPeakWithCentroid(spectrum: ArraySlice<Double>,
                                           frequencies: ArraySlice<Double>,
@@ -133,7 +159,6 @@ final class Study: ObservableObject {
                 var maxAmplitude = -Double.infinity
                 var maxIndex = -1
                 
-                // Search only within the frequency window
                 for (index, freq) in frequencies.enumerated() {
                         if freq >= minFreq && freq <= maxFreq {
                                 let amplitude = spectrum[spectrum.startIndex + index]
@@ -149,15 +174,13 @@ final class Study: ObservableObject {
                 let startIndex = spectrum.startIndex
                 let actualIndex = startIndex + maxIndex
                 
-                // Check bounds for centroid calculation
                 guard actualIndex > spectrum.startIndex && actualIndex < spectrum.endIndex - 1 else {
                         return frequencies[actualIndex]
                 }
                 
-                // Centroid refinement
-                let alpha = spectrum[actualIndex - 1]  // left bin
-                let beta = spectrum[actualIndex]       // center bin (peak)
-                let gamma = spectrum[actualIndex + 1]  // right bin
+                let alpha = spectrum[actualIndex - 1]
+                let beta = spectrum[actualIndex]
+                let gamma = spectrum[actualIndex + 1]
                 
                 let centroidOffset = (gamma - alpha) / (alpha + beta + gamma)
                 
@@ -169,7 +192,6 @@ final class Study: ObservableObject {
                 
                 return centerFreq + centroidOffset * binWidth
         }
-
         
         private func perform() {
                 let (audioSamples, newBookmark) = audioStream.readAsDouble(from: .bookmark(audioStreamBookmark))
@@ -188,6 +210,7 @@ final class Study: ObservableObject {
                 
                 processSignal()
         }
+        
         private func processSignal() {
                 let targetFreq = store.targetFrequency()
                 
@@ -216,10 +239,8 @@ final class Study: ObservableObject {
                 
                 var basebandResult: (spectrum: ArraySlice<Double>, frequencies: ArraySlice<Double>)?
                 if let preprocessor = preprocessor, let buffer = basebandBuffer {
-                        let samplesNeeded = Int(1.0 * preprocessor.fsOut)
-                        let (fftSamples, _) = buffer.read(count: samplesNeeded)
-                        print("Baseband buffer: requested=\(store.fftSize), got=\(fftSamples.count)")
-
+                        let (fftSamples, _) = buffer.read(count: store.fftSize)
+                        
                         if !fftSamples.isEmpty {
                                 basebandResult = basebandFFT.processBaseband(
                                         samples: fftSamples,
@@ -245,6 +266,7 @@ final class Study: ObservableObject {
                 
                 var basebandSpectrum: [Double]? = nil
                 var basebandFrequencies: [Double]? = nil
+                var basebandMUSICData: [Double]? = nil
                 
                 if let baseband = basebandResult {
                         let basebandMapped = basebandBinMapper.mapSpectrum(baseband.spectrum)
@@ -252,8 +274,34 @@ final class Study: ObservableObject {
                         basebandFrequencies = Array(basebandBinMapper.frequencies)
                 }
                 
-                // Find peaks within ±50 cents of target frequency
-                let centRatio = pow(2.0, store.targetBandwidth / 1200.0) // 50 cents = 50/1200 octaves
+                if store.musicEnabled && displayBaseband,
+                        let preprocessor = preprocessor,
+                   let buffer = basebandBuffer {
+                        
+                        let maxMUSICSamples = 1024
+                        let (musicSamples, _) = buffer.read(count: maxMUSICSamples)
+                        
+                        if let params = computeMUSICParameters(sampleCount: musicSamples.count) {
+                                let musicFreqMin = preprocessor.fBaseband - preprocessor.bandwidth/2
+                                let musicFreqMax = preprocessor.fBaseband + preprocessor.bandwidth/2
+                                
+                                let musicResult = basebandMUSIC.processComplexSamples(
+                                        ArraySlice(musicSamples),
+                                        sampleRate: preprocessor.fsOut,
+                                        minFreq: musicFreqMin,
+                                        maxFreq: musicFreqMax,
+                                        subarrayLength: params.subarrayLength,
+                                        snapshotCount: params.snapshotCount
+                                )
+                                
+                                if !musicResult.spectrum.isEmpty {
+                                        let mappedMUSIC = musicBinMapper.mapSpectrum(musicResult.spectrum)
+                                        basebandMUSICData = Array(mappedMUSIC)
+                                }
+                        }
+                }
+                
+                let centRatio = pow(2.0, store.targetBandwidth / 1200.0)
                 let minSearchFreq = targetFreq / centRatio
                 let maxSearchFreq = targetFreq * centRatio
                 
@@ -278,6 +326,7 @@ final class Study: ObservableObject {
                                 (min: 0, max: store.audioSampleRate / 2),
                         frameNumber: frameCounter,
                         basebandSpectrum: basebandSpectrum,
+                        basebandMUSIC: basebandMUSICData,
                         basebandFrequencies: basebandFrequencies
                 )
                 
@@ -304,11 +353,16 @@ final class Study: ObservableObject {
                                 halfSize: store.fftSize,
                                 useLogScale: false
                         )
-                        print("Baseband coverage: \(pp.fBaseband - pp.fsOut/2) to \(pp.fBaseband + pp.fsOut/2) Hz")
-                        print("Display window: \(pp.fBaseband - pp.bandwidth/2) to \(pp.fBaseband + pp.bandwidth/2) Hz")
-
+                        
+                        musicBinMapper.remap(
+                                minFreq: pp.fBaseband - bandwidth/2,
+                                maxFreq: pp.fBaseband + bandwidth/2,
+                                heterodyneOffset: pp.fBaseband,
+                                sampleRate: pp.fsOut,
+                                halfSize: store.musicGridResolution,
+                                useLogScale: false
+                        )
                 }
-                
         }
         
         private func updatePreprocessor() {
@@ -324,7 +378,6 @@ final class Study: ObservableObject {
                                 marginCents: store.targetBandwidth,
                                 attenDB: 50
                         )
-                        
                         
                         if let pp = preprocessor {
                                 let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))

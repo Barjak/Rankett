@@ -102,7 +102,7 @@ class TuningParameterStore: ObservableObject {
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
         var targetBandwidth = 200.0
         let minDB: Double = -150.0
-        let maxDB: Double = 0.0
+        let maxDB: Double = 50.0
         
         // MARK: - Zoom & Viewport
         @Published var zoomState: ZoomState = .fullSpectrum {
@@ -144,6 +144,10 @@ class TuningParameterStore: ObservableObject {
         @Published var audibleToneEnabled: Bool = false
         @Published var pitchIncrementSemitones: Int = 1
         @Published var mutationStopTranspose: Int = 0
+        let musicSourceCount: Int = 1          // Fundamental + 3 harmonics typical for organ
+        let musicGridResolution: Int = 1024    // Good balance of precision vs computation
+        let musicMinSamples: Int = 500          // Minimum for stable covariance estimation
+        @Published var musicEnabled: Bool = true
         
         @Published var centsError: Double = 0.0
         

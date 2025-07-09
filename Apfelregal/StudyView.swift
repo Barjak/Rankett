@@ -8,6 +8,9 @@ struct GraphView: View {
         @State private var targetSpectrum: [Double] = []
         @State private var currentFrequencies: [Double] = []
         
+        @State private var smoothedMUSICSpectrum: [Double] = []
+        @State private var targetMUSICSpectrum: [Double] = []
+        
         var frequencyRange: ClosedRange<Double> {
                 store.viewportMinFreq...store.viewportMaxFreq
         }
@@ -52,20 +55,26 @@ struct GraphView: View {
                         if let results = study.results {
                                 targetSpectrum = results.logDecimatedSpectrum
                                 currentFrequencies = results.logDecimatedFrequencies
+                                targetMUSICSpectrum = results.basebandMUSIC ?? []
                         }
                 }
                 .onChange(of: store.zoomState) { _ in
                         smoothedSpectrum = targetSpectrum
+                        smoothedMUSICSpectrum = targetMUSICSpectrum
                 }
                 .onChange(of: store.displayBinCount) { _ in
                         smoothedSpectrum = []
                         targetSpectrum = []
                         currentFrequencies = []
+                        smoothedMUSICSpectrum = []
+                        targetMUSICSpectrum = []
                 }
                 .onChange(of: store.useLogFrequencyScale) { _ in
                         smoothedSpectrum = []
                         targetSpectrum = []
                         currentFrequencies = []
+                        smoothedMUSICSpectrum = []
+                        targetMUSICSpectrum = []
                 }
                 .onAppear {
                         study.start()
@@ -85,6 +94,19 @@ struct GraphView: View {
                                 targetSpectrum[i] * (1 - factor)
                         }
                 }
+                
+                if !targetMUSICSpectrum.isEmpty {
+                        if smoothedMUSICSpectrum.count != targetMUSICSpectrum.count {
+                                smoothedMUSICSpectrum = targetMUSICSpectrum
+                        } else {
+                                for i in 0..<smoothedMUSICSpectrum.count {
+                                        smoothedMUSICSpectrum[i] = smoothedMUSICSpectrum[i] * factor +
+                                        targetMUSICSpectrum[i] * (1 - factor)
+                                }
+                        }
+                } else {
+                        smoothedMUSICSpectrum = []
+                }
         }
         
         private func cycleZoom() {
@@ -97,19 +119,76 @@ struct GraphView: View {
                 Canvas { context, canvasSize in
                         drawGrid(context: context, size: canvasSize)
                         drawSpectrum(context: context, size: canvasSize)
-                        drawPeakLine(context: context, size: canvasSize)  // Add this line
+                        drawMUSICSpectrum(context: context, size: canvasSize)
+                        drawPeakLine(context: context, size: canvasSize)
                         drawAxes(context: context, size: canvasSize)
                 }
         }
+        
+        private func drawMUSICSpectrum(context: GraphicsContext, size: CGSize) {
+                guard !smoothedMUSICSpectrum.isEmpty,
+                      !currentFrequencies.isEmpty,
+                      smoothedMUSICSpectrum.count == currentFrequencies.count else { return }
+                
+                let freqRange = frequencyRange
+                let maxDB = store.maxDB
+                let minDB = store.minDB
+                
+                var path = Path()
+                var started = false
+                
+                var startIndex = 0
+                var endIndex = currentFrequencies.count - 1
+                
+                for i in 0..<currentFrequencies.count {
+                        if currentFrequencies[i] >= freqRange.lowerBound {
+                                startIndex = max(0, i - 1)
+                                break
+                        }
+                }
+                
+                for i in (0..<currentFrequencies.count).reversed() {
+                        if currentFrequencies[i] <= freqRange.upperBound {
+                                endIndex = min(currentFrequencies.count - 1, i + 1)
+                                break
+                        }
+                }
+                
+                // Convert normalized MUSIC values (0-1) to dB scale for display
+                for i in startIndex...endIndex {
+                        let freq = currentFrequencies[i]
+                        let musicValue = smoothedMUSICSpectrum[i]
+                        
+                        // Convert to dB-like scale for display consistency
+                        let dbValue = 20.0 * log10(max(musicValue, 1e-10))
+                        let scaledValue = dbValue + 40.0  // Offset to bring into visible range
+                        
+                        let x = frequencyToX(freq, size: size.width)
+                        let normalizedValue = (scaledValue - minDB) / (maxDB - minDB)
+                        let y = size.height * (1 - CGFloat(normalizedValue))
+                        
+                        if started {
+                                path.addLine(to: CGPoint(x: x, y: y))
+                        } else {
+                                path.move(to: CGPoint(x: x, y: y))
+                                started = true
+                        }
+                }
+                
+                context.stroke(
+                        path,
+                        with: .color(.purple),
+                        style: StrokeStyle(lineWidth: 0.6, dash: [3, 2])
+                )
+        }
+        
         private func drawPeakLine(context: GraphicsContext, size: CGSize) {
                 guard let results = study.results,
                       !results.trackedPeaks.isEmpty,
                       let peakFreq = results.trackedPeaks.first else { return }
                 
                 let freqRange = frequencyRange
-                print("Peak ", peakFreq)
                 
-                // Only draw if peak is within viewport
                 guard peakFreq >= freqRange.lowerBound && peakFreq <= freqRange.upperBound else { return }
                 
                 let x = frequencyToX(peakFreq, size: size.width)
@@ -123,7 +202,7 @@ struct GraphView: View {
                         lineWidth: 0.5
                 )
         }
-
+        
         private func drawSpectrum(context: GraphicsContext, size: CGSize) {
                 guard !smoothedSpectrum.isEmpty,
                       !currentFrequencies.isEmpty,
@@ -303,9 +382,16 @@ struct StudyView: View {
                         Spacer()
                         
                         if let results = study.results {
-                                Text(results.isBaseband ? "Baseband" : "Full Spectrum")
-                                        .font(.caption)
-                                        .foregroundColor(.gray)
+                                HStack(spacing: 12) {
+                                        if results.basebandMUSIC != nil {
+                                                Text("MUSIC")
+                                                        .font(.caption)
+                                                        .foregroundColor(.purple)
+                                        }
+                                        Text(results.isBaseband ? "Baseband" : "Full Spectrum")
+                                                .font(.caption)
+                                                .foregroundColor(.gray)
+                                }
                         }
                 }
                 .padding(.horizontal)

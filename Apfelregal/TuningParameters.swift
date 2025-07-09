@@ -147,7 +147,7 @@ class TuningParameterStore: ObservableObject {
         let musicSourceCount: Int = 1          // Fundamental + 3 harmonics typical for organ
         let musicGridResolution: Int = 1024    // Good balance of precision vs computation
         let musicMinSamples: Int = 500          // Minimum for stable covariance estimation
-        @Published var musicEnabled: Bool = true
+        @Published var musicEnabled: Bool = false
         
         @Published var centsError: Double = 0.0
         

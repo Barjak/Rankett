@@ -35,11 +35,11 @@ class ToneEKF {
         init(M: Int, fs: Double,
              initialFreqs: [Double]? = nil,
              minSeparationHz: Double = 2.30e-03,
-             R: Double = 5.51e+01,
-             RPseudo: Double = 1e-6,
-             sigmaPhi: Double = 2.94e+01,
-             sigmaF: Double = 1e-4,
-             sigmaA: Double = 6.96e-01,
+             R: Double = 1.1,                   // Lower measurement noise for cleaner audio
+             RPseudo: Double = 1e-6,             // Keep tight for separation enforcement
+             sigmaPhi: Double = 1.1,             // Was 29.4 - way too high for stable tones
+             sigmaF: Double = 500.01,              // Allow for some frequency drift/vibrato
+             sigmaA: Double = 1.1,               // Lower amplitude variation for stable tones
              covarianceJitter: Double = 1e-12) {
                 
                 self.M = M

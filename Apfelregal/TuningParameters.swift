@@ -80,7 +80,7 @@ class TuningParameterStore: ObservableObject {
                 }
         }
         
-        @Published var targetNote: Note = Note(name: "a1") {
+        @Published var targetNote: Note = Note(name: "c1") {
                 didSet {
                         print("🎵 TargetNote changed: \(oldValue.name) → \(targetNote.name)")
                         print("   Target frequency now: \(targetFrequency()) Hz")
@@ -95,7 +95,7 @@ class TuningParameterStore: ObservableObject {
         }
         
         // MARK: - Display Settings
-        @Published var displayBinCount: Int = 512
+        @Published var displayBinCount: Int = 100
         @Published var useLogFrequencyScale: Bool = true
         @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents

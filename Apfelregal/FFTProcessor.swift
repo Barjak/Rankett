@@ -212,8 +212,8 @@ final class FFTProcessor {
                 } else {
                         vDSP_vsmulD(amplitudeBuffer, 1, &invL, outputSpectrumBuffer, 1, vDSP_Length(count))
                 }
-                print("Baseband normalization: actualSamples=\(actualSampleCount), fftSize=\(fftSize), invL=\(invL)")
-                print("First few amplitudes before dB: ", amplitudeBuffer[0],  amplitudeBuffer[1], amplitudeBuffer[2], amplitudeBuffer[3])
+//                print("Baseband normalization: actualSamples=\(actualSampleCount), fftSize=\(fftSize), invL=\(invL)")
+//                print("First few amplitudes before dB: ", amplitudeBuffer[0],  amplitudeBuffer[1], amplitudeBuffer[2], amplitudeBuffer[3])
                 var floorDB: Double = 1e-10
                 var ceilingDB: Double = .greatestFiniteMagnitude
                 vDSP_vclipD(outputSpectrumBuffer, 1, &floorDB, &ceilingDB, outputSpectrumBuffer, 1, vDSP_Length(count))
@@ -250,7 +250,7 @@ final class FFTProcessor {
                 lastSampleRate = sampleRate
                 lastBasebandFreq = basebandFreq
                 lastIsBaseband = true
-                print("Baseband freqs[0]=\(outputFrequencyBuffer[0]), freqs[\(halfSize)]=\(outputFrequencyBuffer[halfSize])")
+//                print("Baseband freqs[0]=\(outputFrequencyBuffer[0]), freqs[\(halfSize)]=\(outputFrequencyBuffer[halfSize])")
 
         }
         

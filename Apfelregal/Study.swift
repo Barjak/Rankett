@@ -16,10 +16,10 @@ struct StudyResults {
         
         let frameNumber: Int
         
-        // Optional baseband spectrum for dual processing
         let basebandSpectrum: [Double]?
         let basebandFrequencies: [Double]?
 }
+
 final class Study: ObservableObject {
         private let audioStream: AudioStream
         private let store: TuningParameterStore
@@ -31,7 +31,7 @@ final class Study: ObservableObject {
         private var rawDoublesBuffer: CircularBuffer<Double>
         private var basebandBuffer: CircularBuffer<DSPDoubleComplex>?
         
-        private var toneEKF: ToneEKF?
+        private var toneIMM: ToneIMMFilter?
         
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
@@ -124,7 +124,6 @@ final class Study: ObservableObject {
                 }
         }
         
-        
         private func findPeakWithCentroid(spectrum: ArraySlice<Double>,
                                           frequencies: ArraySlice<Double>,
                                           minFreq: Double,
@@ -134,7 +133,6 @@ final class Study: ObservableObject {
                 var maxAmplitude = -Double.infinity
                 var maxIndex = -1
                 
-                // Search only within the frequency window
                 for (index, freq) in frequencies.enumerated() {
                         if freq >= minFreq && freq <= maxFreq {
                                 let amplitude = spectrum[spectrum.startIndex + index]
@@ -150,15 +148,13 @@ final class Study: ObservableObject {
                 let startIndex = spectrum.startIndex
                 let actualIndex = startIndex + maxIndex
                 
-                // Check bounds for centroid calculation
                 guard actualIndex > spectrum.startIndex && actualIndex < spectrum.endIndex - 1 else {
                         return frequencies[actualIndex]
                 }
                 
-                // Centroid refinement
-                let alpha = spectrum[actualIndex - 1]  // left bin
-                let beta = spectrum[actualIndex]       // center bin (peak)
-                let gamma = spectrum[actualIndex + 1]  // right bin
+                let alpha = spectrum[actualIndex - 1]
+                let beta = spectrum[actualIndex]
+                let gamma = spectrum[actualIndex + 1]
                 
                 let centroidOffset = (gamma - alpha) / (alpha + beta + gamma)
                 
@@ -170,7 +166,6 @@ final class Study: ObservableObject {
                 
                 return centerFreq + centroidOffset * binWidth
         }
-        
         
         private func perform() {
                 let (audioSamples, newBookmark) = audioStream.readAsDouble(from: .bookmark(audioStreamBookmark))
@@ -219,9 +214,8 @@ final class Study: ObservableObject {
                 
                 var basebandResult: (spectrum: ArraySlice<Double>, frequencies: ArraySlice<Double>)?
                 if let preprocessor = preprocessor, let buffer = basebandBuffer {
-                        let samplesNeeded = Int(1.0 * preprocessor.fsOut)
+                        let samplesNeeded = Int(2.0 * preprocessor.fsOut)
                         let (fftSamples, _) = buffer.read(count: samplesNeeded)
-                        print("Baseband buffer: requested=\(store.fftSize), got=\(fftSamples.count)")
                         
                         if !fftSamples.isEmpty {
                                 basebandResult = basebandFFT.processBaseband(
@@ -233,33 +227,9 @@ final class Study: ObservableObject {
                         }
                 }
                 
-                // Feed baseband samples to EKF
-                if let ekf = toneEKF, !basebandSamples.isEmpty {
-                        print("🎯 EKF: Feeding \(basebandSamples.count) samples")
-                        
-                        // Print first few samples to verify they're not zero
-                        let samplePreview = basebandSamples.prefix(3).map { sample in
-                                String(format: "(%.3f, %.3f)", sample.real, sample.imag)
-                        }.joined(separator: ", ")
-                        print("   Sample preview: \(samplePreview)")
-                        
+                if let imm = toneIMM, !basebandSamples.isEmpty {
                         for sample in basebandSamples {
-                                ekf.update(i: sample.real, q: sample.imag)
-                        }
-                        
-                        // Print EKF state after update
-                        let state = ekf.getStateUnsorted()
-                        if let freqs = state["freqs"] as? [Double],
-                           let amps = state["amplitudes"] as? [Double] {
-                                print("   EKF state - Freqs: \(freqs.map { String(format: "%.2f", $0) })")
-                                print("   EKF state - Amps: \(amps.map { String(format: "%.3f", $0) })")
-                        }
-                } else {
-                        if toneEKF == nil {
-                                print("⚠️ EKF is nil")
-                        }
-                        if basebandSamples.isEmpty {
-                                print("⚠️ No baseband samples to feed")
+                                imm.update(i: sample.real, q: sample.imag)
                         }
                 }
                 
@@ -285,20 +255,15 @@ final class Study: ObservableObject {
                         basebandFrequencies = Array(basebandBinMapper.frequencies)
                 }
                 
-                // Get tracked peaks from EKF
                 var trackedPeaks: [Double] = []
-                if let ekf = toneEKF, let preprocessor = preprocessor {
-                        let state = ekf.getState()
+                if let imm = toneIMM, let preprocessor = preprocessor {
+                        let state = imm.getState()
                         if let frequencies = state["freqs"] as? [Double] {
-                                print("📍 EKF tracked freqs (baseband): \(frequencies.map { String(format: "%.2f", $0) })")
                                 trackedPeaks = frequencies.map { freq in
                                         preprocessor.fBaseband + freq
                                 }
-                                print("📍 EKF tracked freqs (absolute): \(trackedPeaks.map { String(format: "%.2f", $0) })")
-                                print("   Baseband center: \(String(format: "%.2f", preprocessor.fBaseband)) Hz")
                         }
                 } else {
-                        // Fallback to centroid peak finder
                         let centRatio = pow(2.0, store.targetBandwidth / 1200.0)
                         let minSearchFreq = targetFreq / centRatio
                         let maxSearchFreq = targetFreq * centRatio
@@ -310,7 +275,6 @@ final class Study: ObservableObject {
                                 maxFreq: maxSearchFreq
                         ) {
                                 trackedPeaks = [peak]
-                                print("📍 Centroid peak: \(String(format: "%.2f", peak)) Hz")
                         }
                 }
                 
@@ -354,11 +318,7 @@ final class Study: ObservableObject {
                                 halfSize: store.fftSize,
                                 useLogScale: false
                         )
-                        print("Baseband coverage: \(pp.fBaseband - pp.fsOut/2) to \(pp.fBaseband + pp.fsOut/2) Hz")
-                        print("Display window: \(pp.fBaseband - pp.bandwidth/2) to \(pp.fBaseband + pp.bandwidth/2) Hz")
-                        
                 }
-                
         }
         
         private func updatePreprocessor() {
@@ -368,8 +328,6 @@ final class Study: ObservableObject {
                 abs(preprocessor!.fBaseband - basebandFreq) > 1.0
                 
                 if needsUpdate {
-                        print("🔧 Updating preprocessor - baseband freq: \(String(format: "%.2f", basebandFreq)) Hz")
-                        
                         preprocessor = StreamingPreprocessor(
                                 fsOrig: store.audioSampleRate,
                                 fBaseband: basebandFreq,
@@ -382,30 +340,29 @@ final class Study: ObservableObject {
                                 basebandBuffer = CircularBuffer<DSPDoubleComplex>(capacity: decimatedBufferSize)
                                 preprocessorBookmark = rawDoublesBuffer.getTotalWritten()
                                 
-                                // Initialize EKF with two tones around DC (in baseband coordinates)
-                                print("🎯 Initializing EKF:")
-                                print("   Sample rate: \(String(format: "%.2f", pp.fsOut)) Hz")
-                                print("   Initial freqs: [-1.0, 1.0] Hz (baseband)")
-                                print("   Min separation: 0.5 Hz")
-                                
-                                toneEKF = ToneEKF(
-                                        M: 2,
+                                toneIMM = ToneIMMFilter(
+                                        M: 1,
                                         fs: pp.fsOut,
-                                        initialFreqs: [-1.0, 1.0],
-                                        minSeparationHz: 0.006
+                                        initialFreqs: [0.0],
+                                        minSeparationHz: 0.006,
+                                        RFast: 0.001,
+                                        RSlow: 10000.0,
+                                        RPseudo: 1e-6,
+                                        sigmaPhiFast: 50.0,
+                                        sigmaFFast: 10.001,
+                                        sigmaAFast: 50.0,
+                                        sigmaPhiSlow: 0.01,
+                                        sigmaFSlow: 0.001,
+                                        sigmaASlow: 50.01,
+                                        covarianceJitter: 1e-10,
+                                        transitionProb: [
+                                                [0.99, 0.01],   // stay in Fast 99 % of the time, only 1 %→Slow
+                                                [0.10, 0.90]    // if you’re in Slow, you jump back to Fast 10 % of the time
+                                        ]
                                 )
-                                
-                                // Verify initial state
-                                if let ekf = toneEKF {
-                                        let state = ekf.getState()
-                                        if let freqs = state["freqs"] as? [Double] {
-                                                print("   EKF initialized with freqs: \(freqs)")
-                                        }
-                                }
                         }
                 }
         }
-        
         private func publishResults(_ newResults: StudyResults) {
                 resultsLock.lock()
                 resultsBuffer = newResults

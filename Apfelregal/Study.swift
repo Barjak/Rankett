@@ -31,7 +31,7 @@ final class Study: ObservableObject {
         private var rawDoublesBuffer: CircularBuffer<Double>
         private var basebandBuffer: CircularBuffer<DSPDoubleComplex>?
         
-        private var toneIMM: ToneIMMFilter?
+        private var dualModeEKF: DualModeEKF?  // Changed from toneIMM
         
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
@@ -227,9 +227,9 @@ final class Study: ObservableObject {
                         }
                 }
                 
-                if let imm = toneIMM, !basebandSamples.isEmpty {
+                if let ekf = dualModeEKF, !basebandSamples.isEmpty {
                         for sample in basebandSamples {
-                                imm.update(i: sample.real, q: sample.imag)
+                                _ = ekf.update(i: sample.real, q: sample.imag)
                         }
                 }
                 
@@ -256,8 +256,8 @@ final class Study: ObservableObject {
                 }
                 
                 var trackedPeaks: [Double] = []
-                if let imm = toneIMM, let preprocessor = preprocessor {
-                        let state = imm.getState()
+                if let ekf = dualModeEKF, let preprocessor = preprocessor {
+                        let state = ekf.update(i: 0, q: 0)  // Get latest state
                         if let frequencies = state["freqs"] as? [Double] {
                                 trackedPeaks = frequencies.map { freq in
                                         preprocessor.fBaseband + freq
@@ -298,6 +298,54 @@ final class Study: ObservableObject {
                 publishResults(results)
         }
         
+        private func updatePreprocessor() {
+                let basebandFreq = store.targetFrequency()
+                
+                let needsUpdate = preprocessor == nil ||
+                abs(preprocessor!.fBaseband - basebandFreq) > 1.0
+                
+                if needsUpdate {
+                        preprocessor = StreamingPreprocessor(
+                                fsOrig: store.audioSampleRate,
+                                fBaseband: basebandFreq,
+                                marginCents: store.targetBandwidth,
+                                attenDB: 70
+                        )
+                        
+                        if let pp = preprocessor {
+                                let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))
+                                basebandBuffer = CircularBuffer<DSPDoubleComplex>(capacity: decimatedBufferSize)
+                                preprocessorBookmark = rawDoublesBuffer.getTotalWritten()
+                                
+                                let fastParams = NoiseParams(
+                                        R: 0.001,
+                                        RPseudo: 1e-6,
+                                        sigmaPhi: 50.0,
+                                        sigmaF: 10.001,
+                                        sigmaA: 50.0,
+                                        covarianceJitter: 1e-10
+                                )
+                                
+                                let slowParams = NoiseParams(
+                                        R: 10.0,
+                                        RPseudo: 1e-6,
+                                        sigmaPhi: 50.01,
+                                        sigmaF: 10.0,
+                                        sigmaA: 50.01,
+                                        covarianceJitter: 1e-10
+                                )
+                                
+                                dualModeEKF = DualModeEKF(
+                                        fs: pp.fsOut,
+                                        baseband: basebandFreq,
+                                        fastParams: fastParams,
+                                        slowParams: slowParams,
+                                        initialFreq: 0.0
+                                )
+                        }
+                }
+        }
+        
         private func updateBinMappers() {
                 fullSpectrumBinMapper.remap(
                         minFreq: store.viewportMinFreq,
@@ -320,49 +368,7 @@ final class Study: ObservableObject {
                         )
                 }
         }
-        
-        private func updatePreprocessor() {
-                let basebandFreq = store.targetFrequency()
-                
-                let needsUpdate = preprocessor == nil ||
-                abs(preprocessor!.fBaseband - basebandFreq) > 1.0
-                
-                if needsUpdate {
-                        preprocessor = StreamingPreprocessor(
-                                fsOrig: store.audioSampleRate,
-                                fBaseband: basebandFreq,
-                                marginCents: store.targetBandwidth,
-                                attenDB: 50
-                        )
-                        
-                        if let pp = preprocessor {
-                                let decimatedBufferSize = Int(Double(store.circularBufferSize) / Double(pp.decimationFactor))
-                                basebandBuffer = CircularBuffer<DSPDoubleComplex>(capacity: decimatedBufferSize)
-                                preprocessorBookmark = rawDoublesBuffer.getTotalWritten()
-                                
-                                toneIMM = ToneIMMFilter(
-                                        M: 1,
-                                        fs: pp.fsOut,
-                                        initialFreqs: [0.0],
-                                        minSeparationHz: 0.006,
-                                        RFast: 0.001,
-                                        RSlow: 10000.0,
-                                        RPseudo: 1e-6,
-                                        sigmaPhiFast: 50.0,
-                                        sigmaFFast: 10.001,
-                                        sigmaAFast: 50.0,
-                                        sigmaPhiSlow: 0.01,
-                                        sigmaFSlow: 0.001,
-                                        sigmaASlow: 50.01,
-                                        covarianceJitter: 1e-10,
-                                        transitionProb: [
-                                                [0.99, 0.01],   // stay in Fast 99 % of the time, only 1 %→Slow
-                                                [0.10, 0.90]    // if you’re in Slow, you jump back to Fast 10 % of the time
-                                        ]
-                                )
-                        }
-                }
-        }
+
         private func publishResults(_ newResults: StudyResults) {
                 resultsLock.lock()
                 resultsBuffer = newResults
@@ -375,3 +381,5 @@ final class Study: ObservableObject {
                 }
         }
 }
+
+

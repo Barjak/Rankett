@@ -95,12 +95,12 @@ class TuningParameterStore: ObservableObject {
         }
         
         // MARK: - Display Settings
-        @Published var displayBinCount: Int = 100
+        @Published var displayBinCount: Int = 200
         @Published var useLogFrequencyScale: Bool = true
         @Published var animationSmoothingFactor: Double = 0.7
         @Published var leftDisplayMode: NumericalDisplayMode = .cents
         @Published var rightDisplayMode: NumericalDisplayMode = .errorHz
-        var targetBandwidth = 200.0
+        var targetBandwidth = 100.0
         let minDB: Double = -150.0
         let maxDB: Double = 50.0
         

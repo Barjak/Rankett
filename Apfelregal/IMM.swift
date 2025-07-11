@@ -1,335 +1,222 @@
 import Foundation
 import Accelerate
 
-class ToneIMMFilter {
-        private let ekfFast: ToneEKF
-        private let ekfSlow: ToneEKF
-        
-        private var muFast: Double = 0.5
-        private var muSlow: Double = 0.5
-        
-        private let transitionProb: [[Double]]
-        
-        // Working buffers for IMM operations
-        private var mixedXFast: [Double]
-        private var mixedXSlow: [Double]
-        private var mixedPFast: [Double]
-        private var mixedPSlow: [Double]
-        
-        private var tempX: [Double]
-        private var tempP: [Double]
-        private var deltaX: [Double]
-        private var deltaXOuter: [Double]
-        
-        private var work3Buffer: [Double]
-        private var hasLoggedNoise = false
-        private var frameCounter: Int = 0
+enum TrackingMode {
+        case fast
+        case slow
+}
 
+struct NoiseParams {
+        let R: Double
+        let RPseudo: Double
+        let sigmaPhi: Double
+        let sigmaF: Double
+        let sigmaA: Double
+        let covarianceJitter: Double
+}
+
+class DualModeEKF {
+        private let fastEKF: ToneEKF
+        private let slowEKF: ToneEKF
+        private let fs: Double
+        private let baseband: Double
         
-        private let nStates: Int
+        private var mode: TrackingMode = .fast
+        private var innovationRateCentsPerSec: Double = 0.0
+        private var fastFreqEMA: Double = 0.0
+        private var lastSlowFreq: Double = 0.0
         
-        init(M: Int, fs: Double,
-             initialFreqs: [Double]? = nil,
-             minSeparationHz: Double = 2.30e-03,
-             RFast: Double = 10.0,      // Higher measurement noise for fast convergence
-             RSlow: Double = 1.1,       // Lower measurement noise for precise tracking
-             RPseudo: Double = 1e-6,
-             sigmaPhiFast: Double = 10.0,
-             sigmaFFast: Double = 2000.0,
-             sigmaAFast: Double = 10.0,
-             sigmaPhiSlow: Double = 1.1,
-             sigmaFSlow: Double = 500.0,
-             sigmaASlow: Double = 1.1,
-             covarianceJitter: Double = 1e-12,
-             transitionProb: [[Double]] = [[0.95, 0.05], [0.05, 0.95]]) {
+        private let alphaInnovation: Double = 0.9
+        private let alphaFreq: Double = 0.9
+        private let centsPerSecThreshold: Double = 1.0
+        private let centsDifferenceThreshold: Double = 3.0
+        
+        init(fs: Double,
+             baseband: Double,
+             fastParams: NoiseParams,
+             slowParams: NoiseParams,
+             initialFreq: Double? = nil) {
                 
-                self.nStates = 3 * M
-                self.transitionProb = transitionProb
+                self.fs = fs
+                self.baseband = baseband
                 
-                hasLoggedNoise = true
+                let initialFreqs = initialFreq.map { [$0] }
                 
-                self.mixedXFast = Array(repeating: 0.0, count: nStates)
-                self.mixedXSlow = Array(repeating: 0.0, count: nStates)
-                self.mixedPFast = Array(repeating: 0.0, count: nStates * nStates)
-                self.mixedPSlow = Array(repeating: 0.0, count: nStates * nStates)
+                self.fastEKF = ToneEKF(
+                        M: 1,
+                        fs: fs,
+                        initialFreqs: initialFreqs,
+                        minSeparationHz: 0.0,
+                        R: fastParams.R,
+                        RPseudo: fastParams.RPseudo,
+                        sigmaPhi: fastParams.sigmaPhi,
+                        sigmaF: fastParams.sigmaF,
+                        sigmaA: fastParams.sigmaA,
+                        covarianceJitter: fastParams.covarianceJitter
+                )
                 
-                self.tempX = Array(repeating: 0.0, count: nStates)
-                self.tempP = Array(repeating: 0.0, count: nStates * nStates)
-                self.deltaX = Array(repeating: 0.0, count: nStates)
-                self.deltaXOuter = Array(repeating: 0.0, count: nStates * nStates)
-                self.work3Buffer = Array(repeating: 0.0, count: nStates * nStates)
+                self.slowEKF = ToneEKF(
+                        M: 1,
+                        fs: fs,
+                        initialFreqs: initialFreqs,
+                        minSeparationHz: 0.0,
+                        R: slowParams.R,
+                        RPseudo: slowParams.RPseudo,
+                        sigmaPhi: slowParams.sigmaPhi,
+                        sigmaF: slowParams.sigmaF,
+                        sigmaA: slowParams.sigmaA,
+                        covarianceJitter: slowParams.covarianceJitter
+                )
                 
-                self.ekfFast = ToneEKF(M: M, fs: fs,
-                                       initialFreqs: initialFreqs,
-                                       minSeparationHz: minSeparationHz,
-                                       R: RFast,
-                                       RPseudo: RPseudo,
-                                       sigmaPhi: sigmaPhiFast,
-                                       sigmaF: sigmaFFast,
-                                       sigmaA: sigmaAFast,
-                                       covarianceJitter: covarianceJitter)
-                
-                self.ekfSlow = ToneEKF(M: M, fs: fs,
-                                       initialFreqs: initialFreqs,
-                                       minSeparationHz: minSeparationHz,
-                                       R: RSlow,
-                                       RPseudo: RPseudo,
-                                       sigmaPhi: sigmaPhiSlow,
-                                       sigmaF: sigmaFSlow,
-                                       sigmaA: sigmaASlow,
-                                       covarianceJitter: covarianceJitter)
+                if let freq = initialFreq {
+                        fastFreqEMA = freq
+                        lastSlowFreq = freq
+                }
         }
         
-
-        func update(i: Double, q: Double) {
+        func update(i: Double, q: Double) -> [String: Any] {
                 let y = DSPDoubleComplex(real: i, imag: q)
                 
-                // Increment frame counter
-                frameCounter += 1
-                let shouldPrint = (frameCounter % 1000 == 0)
+                let fastFreqBefore = fastEKF.x[1]
+                let fastInnovationStats = fastEKF.getInnovationStats(y: y)
+                fastEKF.update(i: i, q: q)
                 
-                // 1) On first call, print each EKF's noise settings (always, not modulo-gated)
-                if !hasLoggedNoise {
-                        let fastNoise = ekfFast.getNoiseParameters()
-                        let slowNoise = ekfSlow.getNoiseParameters()
-                        print("🔧 Fast noise parameters:", fastNoise)
-                        print("🔧 Slow noise parameters:", slowNoise)
-                        hasLoggedNoise = true
-                }
+                slowEKF.update(i: i, q: q)
                 
-                // 2) Mixing step
-                performMixing()
+                updateTrackingMetrics(fastInnovationStats: fastInnovationStats)
+                updateFrequencyEMA(fastFreq: fastEKF.x[1])
                 
-                // 3) Parallel EKF updates
-                ekfFast.x = mixedXFast
-                ekfFast.P = mixedPFast
-                ekfFast.update(i: i, q: q)
+                checkModeTransition()
                 
-                ekfSlow.x = mixedXSlow
-                ekfSlow.P = mixedPSlow
-                ekfSlow.update(i: i, q: q)
-                
-                // 4) Post‐update covariances P
-                if shouldPrint {
-                        if let Pfast = ekfFast.getState()["P"] as? [Double],
-                           let Pslow = ekfSlow.getState()["P"] as? [Double] {
-                                print(String(format: "📈 Post‐update P_fast[0]=%.3e   P_slow[0]=%.3e",
-                                             Pfast[0], Pslow[0]))
-                        }
-                        
-                        // 5) Innovation stats (ν and S)
-                        let statsF = ekfFast.getInnovationStats(y: y)
-                        let statsS = ekfSlow.getInnovationStats(y: y)
-                        if let νf = statsF["innovation"] as? [Double],
-                           let Sf = statsF["S"]           as? [Double],
-                           let νs = statsS["innovation"] as? [Double],
-                           let Ss = statsS["S"]           as? [Double] {
-                                print("🔍 Fast innovation ν=", νf, "   S=", Sf)
-                                print("🔍 Slow innovation ν=", νs, "   S=", Ss)
-                        }
-                }
-                
-                // 6) Compute raw likelihoods
-                let λ_fast = computeLikelihood(ekf: ekfFast, y: y)
-                let λ_slow = computeLikelihood(ekf: ekfSlow, y: y)
-                
-                // 7) Update mode probabilities
-                updateModeProbabilities(lambdaFast: λ_fast, lambdaSlow: λ_slow)
-                
-                // 8) Print likelihoods and final weights
-                if shouldPrint {
-                        print(String(format:
-                                        "🔀 λ_fast=%.3e   λ_slow=%.3e   μ_fast=%.4f   μ_slow=%.4f",
-                                     λ_fast, λ_slow, muFast, muSlow))
-                }
-                
-                // 9) Combine estimates for return
-                combineEstimates()
+                return mode == .fast ? fastEKF.getState() : slowEKF.getState()
         }
         
-        private func performMixing() {
-                // Compute mixing probabilities
-                let denom = [
-                        transitionProb[0][0] * muFast + transitionProb[1][0] * muSlow,
-                        transitionProb[0][1] * muFast + transitionProb[1][1] * muSlow
-                ]
+        private func updateTrackingMetrics(fastInnovationStats: [String: Any]) {
+                guard let innovation = fastInnovationStats["innovation"] as? [Double],
+                      let H = fastInnovationStats["H"] as? [Double],
+                      let S = fastInnovationStats["S"] as? [Double] else { return }
                 
-                let mu00 = transitionProb[0][0] * muFast / denom[0]
-                let mu10 = transitionProb[1][0] * muSlow / denom[0]
-                let mu01 = transitionProb[0][1] * muFast / denom[1]
-                let mu11 = transitionProb[1][1] * muSlow / denom[1]
+                var HP = Array(repeating: 0.0, count: 2 * 3)
+                cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                            2, 3, 3,
+                            1.0, H, 2,
+                            fastEKF.P, 3,
+                            0.0, &HP, 2)
                 
-                // Mixed state for fast model
-                vDSP_vclrD(&mixedXFast, 1, vDSP_Length(nStates))
-                cblas_daxpy(nStates, mu00, ekfFast.x, 1, &mixedXFast, 1)
-                cblas_daxpy(nStates, mu10, ekfSlow.x, 1, &mixedXFast, 1)
+                var SInv = Array(repeating: 0.0, count: 4)
+                invertMatrix2x2(S, &SInv)
                 
-                // Mixed state for slow model
-                vDSP_vclrD(&mixedXSlow, 1, vDSP_Length(nStates))
-                cblas_daxpy(nStates, mu01, ekfFast.x, 1, &mixedXSlow, 1)
-                cblas_daxpy(nStates, mu11, ekfSlow.x, 1, &mixedXSlow, 1)
+                var K = Array(repeating: 0.0, count: 3 * 2)
+                var PHt = Array(repeating: 0.0, count: 3 * 2)
+                cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                            3, 2, 3,
+                            1.0, fastEKF.P, 3,
+                            H, 2,
+                            0.0, &PHt, 3)
                 
-                // Mixed covariance for fast model
-                vDSP_vclrD(&mixedPFast, 1, vDSP_Length(nStates * nStates))
+                cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                            3, 2, 2,
+                            1.0, PHt, 3,
+                            SInv, 2,
+                            0.0, &K, 3)
                 
-                // Fast contribution to fast mixed
-                vDSP_vsubD(mixedXFast, 1, ekfFast.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfFast.P, 1, deltaXOuter, 1, &tempP, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, mu00, tempP, 1, &mixedPFast, 1)
-                
-                // Slow contribution to fast mixed
-                vDSP_vclrD(&deltaXOuter, 1, vDSP_Length(nStates * nStates))
-                vDSP_vsubD(mixedXFast, 1, ekfSlow.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfSlow.P, 1, deltaXOuter, 1, &tempP, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, mu10, tempP, 1, &mixedPFast, 1)
-                
-                // Mixed covariance for slow model
-                vDSP_vclrD(&mixedPSlow, 1, vDSP_Length(nStates * nStates))
-                
-                // Fast contribution to slow mixed
-                vDSP_vclrD(&deltaXOuter, 1, vDSP_Length(nStates * nStates))
-                vDSP_vsubD(mixedXSlow, 1, ekfFast.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfFast.P, 1, deltaXOuter, 1, &tempP, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, mu01, tempP, 1, &mixedPSlow, 1)
-                
-                // Slow contribution to slow mixed
-                vDSP_vclrD(&deltaXOuter, 1, vDSP_Length(nStates * nStates))
-                vDSP_vsubD(mixedXSlow, 1, ekfSlow.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfSlow.P, 1, deltaXOuter, 1, &tempP, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, mu11, tempP, 1, &mixedPSlow, 1)
-        }
-        
-        private func computeLikelihood(ekf: ToneEKF, y: DSPDoubleComplex) -> Double {
-                let stats = ekf.getInnovationStats(y: y)
-                guard let innovation = stats["innovation"] as? [Double],
-                      let S = stats["S"] as? [Double] else {
-                        return 1e-100
-                }
-                
-                // Compute determinant of 2x2 S matrix
-                let detS = S[0] * S[3] - S[1] * S[2]
-                if detS <= 0 {
-                        return 1e-100
-                }
-                
-                // Invert S
-                var SInv = [Double](repeating: 0.0, count: 4)
-                let invDet = 1.0 / detS
-                SInv[0] = S[3] * invDet
-                SInv[1] = -S[1] * invDet
-                SInv[2] = -S[2] * invDet
-                SInv[3] = S[0] * invDet
-                
-                // Compute innovation' * inv(S) * innovation
-                var temp = [0.0, 0.0]
+                var stateCorrection = Array(repeating: 0.0, count: 3)
                 cblas_dgemv(CblasColMajor, CblasNoTrans,
-                            2, 2,
-                            1.0, SInv, 2,
+                            3, 2,
+                            1.0, K, 3,
                             innovation, 1,
-                            0.0, &temp, 1)
+                            0.0, &stateCorrection, 1)
                 
-                let quadForm = cblas_ddot(2, innovation, 1, temp, 1)
+                let freqInnovationHz = stateCorrection[1]
+                let freqInnovationHzPerSample = abs(freqInnovationHz)
+                let freqInnovationHzPerSec = freqInnovationHzPerSample * fs
+                let centsPerHz = 1200.0 / log(2.0) / baseband
+                let innovationCentsPerSec = freqInnovationHzPerSec * centsPerHz
                 
-                // Use log-likelihood to avoid numerical issues with large R differences
-                let logLikelihoodAdj = -0.5 * quadForm
-                
-                // 4') (optional) clamp for numeric safety
-                let clampedLL = max(-10000, min(10000, logLikelihoodAdj))
-                
-                // 5') back to linear domain:
-                return exp(clampedLL)
+                innovationRateCentsPerSec = alphaInnovation * innovationRateCentsPerSec +
+                (1.0 - alphaInnovation) * innovationCentsPerSec
         }
         
-        private func updateModeProbabilities(lambdaFast: Double, lambdaSlow: Double) {
-                let cBar = lambdaFast * (transitionProb[0][0] * muFast + transitionProb[1][0] * muSlow) +
-                lambdaSlow * (transitionProb[0][1] * muFast + transitionProb[1][1] * muSlow)
-                
-                if cBar > 0 {
-                        let muFastNew = lambdaFast * (transitionProb[0][0] * muFast + transitionProb[1][0] * muSlow) / cBar
-                        let muSlowNew = lambdaSlow * (transitionProb[0][1] * muFast + transitionProb[1][1] * muSlow) / cBar
+        private func updateFrequencyEMA(fastFreq: Double) {
+                fastFreqEMA = alphaFreq * fastFreqEMA + (1.0 - alphaFreq) * fastFreq
+        }
+        
+        private func checkModeTransition() {
+                switch mode {
+                case .fast:
+                        if innovationRateCentsPerSec < centsPerSecThreshold {
+                                transitionToSlowMode()
+                        }
                         
-                        muFast = muFastNew
-                        muSlow = muSlowNew
+                case .slow:
+                        let freqDiffCents = abs(fastFreqEMA - lastSlowFreq) * (1200.0 / log(2.0) / baseband)
+                        if freqDiffCents > centsDifferenceThreshold {
+                                mode = .fast
+                        } else {
+                                lastSlowFreq = slowEKF.x[1]
+                        }
                 }
         }
         
-        private func combineEstimates() {
-                // Combined state
-                vDSP_vclrD(&tempX, 1, vDSP_Length(nStates))
-                cblas_daxpy(nStates, muFast, ekfFast.x, 1, &tempX, 1)
-                cblas_daxpy(nStates, muSlow, ekfSlow.x, 1, &tempX, 1)
+        private func transitionToSlowMode() {
+                mode = .slow
                 
-                // Combined covariance
-                vDSP_vclrD(&tempP, 1, vDSP_Length(nStates * nStates))
+                slowEKF.x = Array(fastEKF.x)
                 
-                // Fast contribution
-                vDSP_vsubD(tempX, 1, ekfFast.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfFast.P, 1, deltaXOuter, 1, &work3Buffer, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, muFast, work3Buffer, 1, &tempP, 1)
+                let fastParams = fastEKF.getNoiseParameters()
+                let slowParams = slowEKF.getNoiseParameters()
                 
-                // Slow contribution
-                vDSP_vclrD(&deltaXOuter, 1, vDSP_Length(nStates * nStates))
-                vDSP_vsubD(tempX, 1, ekfSlow.x, 1, &deltaX, 1, vDSP_Length(nStates))
-                cblas_dger(CblasColMajor, nStates, nStates,
-                           1.0, deltaX, 1, deltaX, 1,
-                           &deltaXOuter, nStates)
-                vDSP_vaddD(ekfSlow.P, 1, deltaXOuter, 1, &work3Buffer, 1, vDSP_Length(nStates * nStates))
-                cblas_daxpy(nStates * nStates, muSlow, work3Buffer, 1, &tempP, 1)
+                let scaleFactorPhi = sqrt(slowParams["sigmaPhi"]! / fastParams["sigmaPhi"]!)
+                let scaleFactorF = sqrt(slowParams["sigmaF"]! / fastParams["sigmaF"]!)
+                let scaleFactorA = sqrt(slowParams["sigmaA"]! / fastParams["sigmaA"]!)
                 
-                // Copy results back
-                ekfFast.x = tempX
-                ekfFast.P = tempP
-        }
-        
-        func getState() -> [String: Any] {
-                var state = ekfFast.getState()
-                state["muFast"] = muFast
-                state["muSlow"] = muSlow
-                
-                // Add this logging temporarily
-                if muSlow > 0.999 {
-                        print("🐌 SLOW MODE: \(String(format: "%.3f", muSlow))")
-                } else if muFast > 0.999 {
-                        print("🏃 FAST MODE: \(String(format: "%.3f", muFast))")
-                } else {
-                        print("🤷 MIXED: fast=\(String(format: "%.3f", muFast)) slow=\(String(format: "%.3f", muSlow))")
+                var scaledP = Array(repeating: 0.0, count: 9)
+                for i in 0..<3 {
+                        for j in 0..<3 {
+                                var scale: Double = 1.0
+                                if i == 0 && j == 0 {
+                                        scale = scaleFactorPhi * scaleFactorPhi
+                                } else if i == 1 && j == 1 {
+                                        scale = scaleFactorF * scaleFactorF
+                                } else if i == 2 && j == 2 {
+                                        scale = scaleFactorA * scaleFactorA
+                                } else if (i == 0 && j == 1) || (i == 1 && j == 0) {
+                                        scale = scaleFactorPhi * scaleFactorF
+                                } else if (i == 0 && j == 2) || (i == 2 && j == 0) {
+                                        scale = scaleFactorPhi * scaleFactorA
+                                } else if (i == 1 && j == 2) || (i == 2 && j == 1) {
+                                        scale = scaleFactorF * scaleFactorA
+                                }
+                                scaledP[j * 3 + i] = fastEKF.P[j * 3 + i] * scale
+                        }
                 }
                 
-                return state
+                slowEKF.P = scaledP
+                lastSlowFreq = slowEKF.x[1]
         }
         
-        func getStateUnsorted() -> [String: Any] {
-                var state = ekfFast.getStateUnsorted()
-                state["muFast"] = muFast
-                state["muSlow"] = muSlow
-                return state
-        }
-        
-        func getNoiseParameters() -> [String: Any] {
-                let fastParams = ekfFast.getNoiseParameters()
-                let slowParams = ekfSlow.getNoiseParameters()
+        private func invertMatrix2x2(_ A: [Double], _ AInv: inout [Double]) {
+                let det = A[0] * A[3] - A[1] * A[2]
+                let invDet = 1.0 / (det + 1e-10)
                 
+                AInv[0] = A[3] * invDet
+                AInv[1] = -A[1] * invDet
+                AInv[2] = -A[2] * invDet
+                AInv[3] = A[0] * invDet
+        }
+        
+        func getMode() -> TrackingMode {
+                return mode
+        }
+        
+        func getStats() -> [String: Any] {
                 return [
-                        "fast": fastParams,
-                        "slow": slowParams,
-                        "transitionProb": transitionProb,
-                        "muFast": muFast,
-                        "muSlow": muSlow
+                        "mode": mode,
+                        "innovationRateCentsPerSec": innovationRateCentsPerSec,
+                        "fastFreqEMA": fastFreqEMA,
+                        "lastSlowFreq": lastSlowFreq,
+                        "fastState": fastEKF.getState(),
+                        "slowState": slowEKF.getState()
                 ]
         }
 }

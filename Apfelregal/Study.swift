@@ -15,9 +15,6 @@ struct StudyResults {
         let filterBandwidth: (min: Double, max: Double)
         
         let frameNumber: Int
-        
-        let basebandSpectrum: [Double]?
-        let basebandFrequencies: [Double]?
 }
 
 final class Study: ObservableObject {
@@ -31,7 +28,7 @@ final class Study: ObservableObject {
         private var rawDoublesBuffer: CircularBuffer<Double>
         private var basebandBuffer: CircularBuffer<DSPDoubleComplex>?
         
-        private var dualModeEKF: DualModeEKF?  // Changed from toneIMM
+        private var dualModeEKF: DualModeEKF?
         
         private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
@@ -47,8 +44,7 @@ final class Study: ObservableObject {
         private let resultsLock = NSLock()
         private var resultsBuffer: StudyResults?
         
-        private var fullSpectrumBinMapper: BinMapper
-        private var basebandBinMapper: BinMapper
+        private var binMapper: BinMapper
         
         private var cancellables = Set<AnyCancellable>()
         
@@ -59,22 +55,11 @@ final class Study: ObservableObject {
                 self.fullSpectrumFFT = FFTProcessor(fftSize: store.fftSize)
                 self.basebandFFT = FFTProcessor(fftSize: store.fftSize)
                 
-                self.fullSpectrumBinMapper = BinMapper(
+                self.binMapper = BinMapper(
                         binCount: store.displayBinCount,
                         halfSize: store.fftSize / 2,
                         sampleRate: store.audioSampleRate,
                         useLogScale: true,
-                        minFreq: 20,
-                        maxFreq: 20000,
-                        heterodyneOffset: 0,
-                        smoothingFactor: 0.0
-                )
-                
-                self.basebandBinMapper = BinMapper(
-                        binCount: store.displayBinCount,
-                        halfSize: store.fftSize,
-                        sampleRate: store.audioSampleRate,
-                        useLogScale: false,
                         minFreq: 20,
                         maxFreq: 20000,
                         heterodyneOffset: 0,
@@ -122,49 +107,6 @@ final class Study: ObservableObject {
                         }
                         Thread.sleep(forTimeInterval: 1.0 / updateRate)
                 }
-        }
-        
-        private func findPeakWithCentroid(spectrum: ArraySlice<Double>,
-                                          frequencies: ArraySlice<Double>,
-                                          minFreq: Double,
-                                          maxFreq: Double) -> Double? {
-                guard spectrum.count >= 3, spectrum.count == frequencies.count else { return nil }
-                
-                var maxAmplitude = -Double.infinity
-                var maxIndex = -1
-                
-                for (index, freq) in frequencies.enumerated() {
-                        if freq >= minFreq && freq <= maxFreq {
-                                let amplitude = spectrum[spectrum.startIndex + index]
-                                if amplitude > maxAmplitude {
-                                        maxAmplitude = amplitude
-                                        maxIndex = index
-                                }
-                        }
-                }
-                
-                guard maxIndex >= 0 else { return nil }
-                
-                let startIndex = spectrum.startIndex
-                let actualIndex = startIndex + maxIndex
-                
-                guard actualIndex > spectrum.startIndex && actualIndex < spectrum.endIndex - 1 else {
-                        return frequencies[actualIndex]
-                }
-                
-                let alpha = spectrum[actualIndex - 1]
-                let beta = spectrum[actualIndex]
-                let gamma = spectrum[actualIndex + 1]
-                
-                let centroidOffset = (gamma - alpha) / (alpha + beta + gamma)
-                
-                let leftFreq = frequencies[actualIndex - 1]
-                let centerFreq = frequencies[actualIndex]
-                let rightFreq = frequencies[actualIndex + 1]
-                
-                let binWidth = rightFreq - centerFreq
-                
-                return centerFreq + centroidOffset * binWidth
         }
         
         private func perform() {
@@ -233,48 +175,24 @@ final class Study: ObservableObject {
                         }
                 }
                 
-                updateBinMappers()
-                
                 let displayBaseband = store.zoomState == .targetFundamental && basebandResult != nil
+                updateBinMapper(displayBaseband: displayBaseband)
                 
                 let (primarySpectrum, primaryFrequencies, primaryIsBaseband, primarySampleRate) =
                 displayBaseband ?
                 (basebandResult!.spectrum, basebandResult!.frequencies, true, preprocessor!.fsOut) :
                 (fullResult.spectrum, fullResult.frequencies, false, store.audioSampleRate)
                 
-                let mapper = displayBaseband ? basebandBinMapper : fullSpectrumBinMapper
-                let logDecimatedSpectrum = mapper.mapSpectrum(primarySpectrum)
-                let logDecimatedFrequencies = mapper.frequencies
-                
-                var basebandSpectrum: [Double]? = nil
-                var basebandFrequencies: [Double]? = nil
-                
-                if let baseband = basebandResult {
-                        let basebandMapped = basebandBinMapper.mapSpectrum(baseband.spectrum)
-                        basebandSpectrum = Array(basebandMapped)
-                        basebandFrequencies = Array(basebandBinMapper.frequencies)
-                }
+                let logDecimatedSpectrum = binMapper.mapSpectrum(primarySpectrum)
+                let logDecimatedFrequencies = binMapper.frequencies
                 
                 var trackedPeaks: [Double] = []
                 if let ekf = dualModeEKF, let preprocessor = preprocessor {
-                        let state = ekf.update(i: 0, q: 0)  // Get latest state
+                        let state = ekf.update(i: 0, q: 0)
                         if let frequencies = state["freqs"] as? [Double] {
                                 trackedPeaks = frequencies.map { freq in
                                         preprocessor.fBaseband + freq
                                 }
-                        }
-                } else {
-                        let centRatio = pow(2.0, store.targetBandwidth / 1200.0)
-                        let minSearchFreq = targetFreq / centRatio
-                        let maxSearchFreq = targetFreq * centRatio
-                        
-                        if let peak = findPeakWithCentroid(
-                                spectrum: fullResult.spectrum,
-                                frequencies: fullResult.frequencies,
-                                minFreq: minSearchFreq,
-                                maxFreq: maxSearchFreq
-                        ) {
-                                trackedPeaks = [peak]
                         }
                 }
                 
@@ -290,9 +208,7 @@ final class Study: ObservableObject {
                         (min: preprocessor!.fBaseband - preprocessor!.bandwidth/2,
                          max: preprocessor!.fBaseband + preprocessor!.bandwidth/2) :
                                 (min: 0, max: store.audioSampleRate / 2),
-                        frameNumber: frameCounter,
-                        basebandSpectrum: basebandSpectrum,
-                        basebandFrequencies: basebandFrequencies
+                        frameNumber: frameCounter
                 )
                 
                 publishResults(results)
@@ -346,19 +262,10 @@ final class Study: ObservableObject {
                 }
         }
         
-        private func updateBinMappers() {
-                fullSpectrumBinMapper.remap(
-                        minFreq: store.viewportMinFreq,
-                        maxFreq: store.viewportMaxFreq,
-                        heterodyneOffset: 0,
-                        sampleRate: store.audioSampleRate,
-                        halfSize: store.fftSize / 2,
-                        useLogScale: true
-                )
-                
-                if let pp = preprocessor {
+        private func updateBinMapper(displayBaseband: Bool) {
+                if displayBaseband, let pp = preprocessor {
                         let bandwidth = pp.bandwidth
-                        basebandBinMapper.remap(
+                        binMapper.remap(
                                 minFreq: pp.fBaseband - bandwidth/2,
                                 maxFreq: pp.fBaseband + bandwidth/2,
                                 heterodyneOffset: pp.fBaseband,
@@ -366,9 +273,18 @@ final class Study: ObservableObject {
                                 halfSize: store.fftSize,
                                 useLogScale: false
                         )
+                } else {
+                        binMapper.remap(
+                                minFreq: store.viewportMinFreq,
+                                maxFreq: store.viewportMaxFreq,
+                                heterodyneOffset: 0,
+                                sampleRate: store.audioSampleRate,
+                                halfSize: store.fftSize / 2,
+                                useLogScale: true
+                        )
                 }
         }
-
+        
         private func publishResults(_ newResults: StudyResults) {
                 resultsLock.lock()
                 resultsBuffer = newResults
@@ -381,5 +297,3 @@ final class Study: ObservableObject {
                 }
         }
 }
-
-

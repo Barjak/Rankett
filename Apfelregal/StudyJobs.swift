@@ -13,7 +13,7 @@ struct AutoTuneJob: StudyJob {
         private static let hpsHarmonics = 4
         private static let centsTol     = 45.0
         private static let snrDbNeeded  = 30.0
-        private static let obviousSnrDb = 30.0
+        private static let obviousSnrDb = 40.0
         
         // EWMA confidence: new = α*old + (1-α)*signal
         private static let ewmaAlpha    = 0.85

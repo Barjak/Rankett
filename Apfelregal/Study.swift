@@ -320,11 +320,11 @@ final class Study: ObservableObject {
                                 )
                                 
                                 let slowParams = NoiseParams(
-                                        R: 10.0,
+                                        R: 0.001,
                                         RPseudo: 1e-6,
-                                        sigmaPhi: 50.01,
-                                        sigmaF: 10.0,
-                                        sigmaA: 50.01,
+                                        sigmaPhi: 5.01,
+                                        sigmaF: 0.2,
+                                        sigmaA: 5.01,
                                         covarianceJitter: 1e-10
                                 )
                                 

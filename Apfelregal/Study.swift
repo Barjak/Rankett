@@ -4,6 +4,37 @@ import Accelerate
 import CoreML
 import Combine
 
+struct StudyContext {
+        let fullSpectrum: ArraySlice<Double>
+        let fullFrequencies: ArraySlice<Double>
+        let basebandSpectrum: ArraySlice<Double>?
+        let basebandFrequencies: ArraySlice<Double>?
+        let basebandSamples: [DSPDoubleComplex]
+        let fullSamples: [Double]
+        let sampleRate: Double
+        let preprocessor: StreamingPreprocessor?
+}
+
+protocol StudyJob: Identifiable {
+        associatedtype Output
+        
+        var remainingFrames: Int { get set }
+        
+        mutating func ingest(frame: StudyResults, context: StudyContext)
+        func finish(using study: Study) -> Output
+}
+
+private struct GenericJob {
+        let id: AnyHashable
+        var box: Any
+        let ingest: (StudyResults, StudyContext) -> Void
+        let tick: () -> Bool
+        let complete: (Study) -> Void
+}
+
+
+
+
 struct StudyResults {
         let logDecimatedSpectrum: [Double]
         let logDecimatedFrequencies: [Double]
@@ -19,7 +50,7 @@ struct StudyResults {
 
 final class Study: ObservableObject {
         private let audioStream: AudioStream
-        private let store: TuningParameterStore
+        let store: TuningParameterStore
         private let fullSpectrumFFT: FFTProcessor
         private let basebandFFT: FFTProcessor
         private var frameCounter = 0
@@ -30,7 +61,7 @@ final class Study: ObservableObject {
         
         private var dualModeEKF: DualModeEKF?
         
-        private let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
+        let studyQueue = DispatchQueue(label: "com.app.study", qos: .userInitiated)
         
         var isRunning = false
         private let updateRate: Double = 60.0
@@ -47,6 +78,17 @@ final class Study: ObservableObject {
         private var binMapper: BinMapper
         
         private var cancellables = Set<AnyCancellable>()
+        
+        
+        private static var jobQueueKey: UInt8 = 0
+        private var jobQueue: [GenericJob] {
+                get {
+                        objc_getAssociatedObject(self, &Self.jobQueueKey) as? [GenericJob] ?? []
+                }
+                set {
+                        objc_setAssociatedObject(self, &Self.jobQueueKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+                }
+        }
         
         init(store: TuningParameterStore) {
                 self.store = store
@@ -101,11 +143,14 @@ final class Study: ObservableObject {
         }
         
         private func processingLoop() {
-                while isRunning {
-                        autoreleasepool {
-                                perform()
-                        }
-                        Thread.sleep(forTimeInterval: 1.0 / updateRate)
+                guard isRunning else { return }
+                
+                autoreleasepool {
+                        perform()
+                }
+                
+                studyQueue.asyncAfter(deadline: .now() + (1.0 / updateRate)) { [weak self] in
+                        self?.processingLoop()
                 }
         }
         
@@ -211,7 +256,21 @@ final class Study: ObservableObject {
                         frameNumber: frameCounter
                 )
                 
-                publishResults(results)
+                
+                let context = StudyContext(
+                        fullSpectrum: fullResult.spectrum,
+                        fullFrequencies: fullResult.frequencies,
+                        basebandSpectrum: basebandResult?.spectrum,
+                        basebandFrequencies: basebandResult?.frequencies,
+                        basebandSamples: basebandSamples,
+                        fullSamples: fullSamples,
+                        sampleRate: store.audioSampleRate,
+                        preprocessor: preprocessor
+                )
+                
+                processJobs(with: results, context: context)
+                
+                publishResults( results)
         }
         
         private func updatePreprocessor() {
@@ -264,7 +323,7 @@ final class Study: ObservableObject {
         
         private func updateBinMapper(displayBaseband: Bool) {
                 if displayBaseband, let pp = preprocessor {
-                        let bandwidth = pp.bandwidth
+                        let bandwidth = store.targetBandwidth * 2
                         binMapper.remap(
                                 minFreq: pp.fBaseband - bandwidth/2,
                                 maxFreq: pp.fBaseband + bandwidth/2,
@@ -294,6 +353,59 @@ final class Study: ObservableObject {
                         self?.resultsLock.lock()
                         self?.results = self?.resultsBuffer
                         self?.resultsLock.unlock()
+                }
+        }
+        
+        // MARK: JOB STUFF
+
+        
+        func enqueue<J: StudyJob>(_ job: J) -> AnyPublisher<J.Output, Never> {
+                let subject = PassthroughSubject<J.Output, Never>()
+                
+                studyQueue.async { [weak self] in
+                        guard let self = self else {
+                                subject.send(completion: .finished)
+                                return
+                        }
+                        
+                        var mutableJob = job
+                        let genericJob = GenericJob(
+                                id: job.id,
+                                box: mutableJob,
+                                ingest: { frame, context in
+                                        mutableJob.ingest(frame: frame, context: context)
+                                },
+                                tick: {
+                                        mutableJob.remainingFrames -= 1
+                                        return mutableJob.remainingFrames <= 0
+                                },
+                                complete: { study in
+                                        let output = mutableJob.finish(using: study)
+                                        subject.send(output)
+                                        subject.send(completion: .finished)
+                                }
+                        )
+                        
+                        self.jobQueue.append(genericJob)
+                }
+                
+                return subject.eraseToAnyPublisher()
+        }
+        
+        func cancelJob<ID: Hashable>(id: ID) {
+                studyQueue.async { [weak self] in
+                        guard let self = self else { return }
+                        self.jobQueue.removeAll { $0.id == id as AnyHashable }
+                }
+        }
+        
+        func processJobs(with results: StudyResults, context: StudyContext) {
+                for (index, job) in jobQueue.enumerated().reversed() {
+                        job.ingest(results, context)
+                        if job.tick() {
+                                job.complete(self)
+                                jobQueue.remove(at: index)
+                        }
                 }
         }
 }

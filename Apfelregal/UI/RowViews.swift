@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import Combine
+
 
 struct NumericalPitchDisplayRow: View {
         @Binding var leftMode: NumericalDisplayMode
@@ -77,25 +79,53 @@ struct NumericalPitchDisplayRow: View {
 struct TargetNoteRow: View {
         @Binding var targetNote: Note
         @Binding var incrementSemitones: Int
+        @ObservedObject var study: Study
         @ObservedObject var store: TuningParameterStore
+
         @State private var showingIncrementModal = false
-        @State private var showingAutoTuneModal = false
+        @State private var autoTuneJobID: UUID?
+        @State private var autoTuneCancellable: AnyCancellable?
+
         
         private func incrementNote(by semitones: Int) {
                 targetNote = targetNote.transposed(by: semitones)
         }
         
+        private func startAutoTune() {
+                print("DEBUG: startAutoTune() called")
+                let job = AutoTuneJob()
+                autoTuneJobID = job.id
+                print("DEBUG: Created job with ID: \(job.id)")
+                
+                autoTuneCancellable = study.enqueue(job)
+                        .receive(on: DispatchQueue.main)
+                        .sink { [self] note in
+                                print("DEBUG: Job completed with result: \(String(describing: note))")
+                                if let note = note {
+                                        targetNote = note
+                                }
+                                autoTuneJobID = nil
+                                autoTuneCancellable = nil
+                        }
+                print("DEBUG: Job enqueued from UI Side")
+        }
+        
+        private func cancelAutoTune() {
+                if let id = autoTuneJobID {
+                        study.cancelJob(id: id)
+                        autoTuneJobID = nil
+                        autoTuneCancellable = nil
+                }
+        }
         
         var body: some View {
                 HStack(spacing: 12) {
-                        // Octave down
                         Button(action: { incrementNote(by: -12) }) {
                                 Image(systemName: "chevron.left.2")
                                         .font(.title3)
                         }
                         .buttonStyle(TuningButtonStyle())
                         
-                        // Fine down
                         Button(action: { incrementNote(by: -incrementSemitones) }) {
                                 Image(systemName: "chevron.left")
                                         .font(.title3)
@@ -105,8 +135,13 @@ struct TargetNoteRow: View {
                                 showingIncrementModal = true
                         }
                         
-                        // TODO: MAKE THIS DISPLA
-                        Button(action: {}) {
+                        Button(action: {
+                                print("DEBUG: Button tapped")
+                                if autoTuneJobID != nil {
+                                        print("DEBUG: Canceling auto-tune")
+                                        cancelAutoTune()
+                                }
+                        }) {
                                 VStack {
                                         Text("\(targetNote.displayName)\(targetNote.octave)")
                                                 .font(.system(.title2, design: .monospaced))
@@ -115,13 +150,38 @@ struct TargetNoteRow: View {
                                                 .opacity(0.7)
                                 }
                                 .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(TuningButtonStyle())
-                        .onLongPressGesture {
-                                showingAutoTuneModal = true
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                                .fill(autoTuneJobID != nil ?
+                                                      Color.red.opacity(0.6) :
+                                                        Color.accentColor.opacity(0.2))
+                                )
+                                .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                                .stroke(autoTuneJobID != nil ? Color.red : Color.accentColor, lineWidth: 1)
+                                )
+                                .onTapGesture {
+                                        print("DEBUG: Tap detected")
+                                        if autoTuneJobID != nil {
+                                                print("DEBUG: Canceling auto-tune")
+                                                cancelAutoTune()
+                                        }
+                                }
+                                .onLongPressGesture(
+                                        minimumDuration: 1.0,
+                                        maximumDistance: .infinity,
+                                        perform: {
+                                                print("DEBUG: Long press performed!")
+                                                startAutoTune()
+                                        },
+                                        onPressingChanged: { isPressing in
+                                                print("DEBUG: Pressing: \(isPressing)")
+                                        }
+                                )
                         }
                         
-                        // Fine up
                         Button(action: { incrementNote(by: incrementSemitones) }) {
                                 Image(systemName: "chevron.right")
                                         .font(.title3)
@@ -131,7 +191,6 @@ struct TargetNoteRow: View {
                                 showingIncrementModal = true
                         }
                         
-                        // Octave up
                         Button(action: { incrementNote(by: 12) }) {
                                 Image(systemName: "chevron.right.2")
                                         .font(.title3)
@@ -144,46 +203,15 @@ struct TargetNoteRow: View {
                                 isPresented: $showingIncrementModal
                         )
                 }
-                .sheet(isPresented: $showingAutoTuneModal) {
-                        // Add your AutoTuneModal here if needed
-//                        AutoTuneModal(
-//                                targetNote: $targetNote,
-//                                concertA: concertA,
-//                                isPresented: $showingAutoTuneModal
-//                        )
-                }
         }
 }
 
-// MARK: - Custom Button Style
 
-//struct TuningButtonStyle: ButtonStyle {
-//        @Environment(\.isEnabled) var isEnabled
-//        
-//        func makeBody(configuration: Configuration) -> some View {
-//                configuration.label
-//                        .padding(.horizontal, 16)
-//                        .padding(.vertical, 8)
-//                        .frame(maxHeight: .infinity)
-//                        .background(
-//                                RoundedRectangle(cornerRadius: 8)
-//                                        .fill(configuration.isPressed ?
-//                                              Color.accentColor.opacity(0.3) :
-//                                                Color.accentColor.opacity(0.2))
-//                        )
-//                        .overlay(
-//                                RoundedRectangle(cornerRadius: 8)
-//                                        .stroke(Color.accentColor, lineWidth: 1)
-//                        )
-//                        .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
-//                        .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
-//                        .opacity(isEnabled ? 1.0 : 0.6)
-//        }
-//}
 
 struct TuningButtonStyle: ButtonStyle {
         @Environment(\.isEnabled) var isEnabled
         var supportsLongPress: Bool = false
+        var isAutoTuning: Bool = false
         
         func makeBody(configuration: Configuration) -> some View {
                 configuration.label
@@ -192,17 +220,18 @@ struct TuningButtonStyle: ButtonStyle {
                         .frame(maxHeight: .infinity)
                         .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                        .fill(configuration.isPressed ?
+                                        .fill(isAutoTuning ?
+                                              Color.red.opacity(0.6) :
+                                                configuration.isPressed ?
                                               Color.accentColor.opacity(0.3) :
                                                 Color.accentColor.opacity(0.2))
                         )
                         .overlay(
                                 ZStack {
                                         RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.accentColor, lineWidth: 1)
+                                                .stroke(isAutoTuning ? Color.red : Color.accentColor, lineWidth: 1)
                                         
                                         if supportsLongPress {
-                                                // Small indicator in corner
                                                 VStack {
                                                         HStack {
                                                                 Spacer()

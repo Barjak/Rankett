@@ -33,6 +33,7 @@ struct TuningControlsView: View {
                         TargetNoteRow(
                                 targetNote: $store.targetNote,
                                 incrementSemitones: $store.pitchIncrementSemitones,
+                                study: self.study,
                                 store: store
                         )
                         .frame(height: 70) // Slightly taller as specified

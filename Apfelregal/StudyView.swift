@@ -7,6 +7,10 @@ struct GraphView: View {
         @State private var smoothedSpectrum: [Double] = []
         @State private var targetSpectrum: [Double] = []
         @State private var currentFrequencies: [Double] = []
+        @State private var smoothedPeaks: [Double] = Array(repeating: 0, count: 20)
+        @State private var targetPeaks: [Double] = Array(repeating: 0, count: 20)
+
+
         
         var frequencyRange: ClosedRange<Double> {
                 store.viewportMinFreq...store.viewportMaxFreq
@@ -53,6 +57,15 @@ struct GraphView: View {
                                 targetSpectrum = results.logDecimatedSpectrum
                                 currentFrequencies = results.logDecimatedFrequencies
                         }
+                        if let results = study.results {
+                                targetSpectrum = results.logDecimatedSpectrum
+                                currentFrequencies = results.logDecimatedFrequencies
+                                
+                                // Copy peaks to target array
+                                for i in 0..<20 {
+                                        targetPeaks[i] = i < results.trackedPeaks.count ? results.trackedPeaks[i] : 0
+                                }
+                        }
                 }
                 .onChange(of: store.zoomState) { _ in
                         smoothedSpectrum = targetSpectrum
@@ -85,6 +98,15 @@ struct GraphView: View {
                                 targetSpectrum[i] * (1 - factor)
                         }
                 }
+                
+                // Smooth peaks
+                for i in 0..<20 {
+                        if targetPeaks[i] > 0 {
+                                smoothedPeaks[i] = smoothedPeaks[i] * factor + targetPeaks[i] * (1 - factor)
+                        } else {
+                                smoothedPeaks[i] = 0
+                        }
+                }
         }
         
         private func cycleZoom() {
@@ -108,13 +130,13 @@ struct GraphView: View {
                 let freqRange = frequencyRange
                 let targetFreq = store.targetFrequency()
                 
-                for (index, peakFreq) in results.trackedPeaks.enumerated() {
-                        guard peakFreq >= freqRange.lowerBound && peakFreq <= freqRange.upperBound else { continue }
+                for index in 0..<min(results.trackedPeaks.count, 20) {
+                        let peakFreq = smoothedPeaks[index]
+                        guard peakFreq > 0 && peakFreq >= freqRange.lowerBound && peakFreq <= freqRange.upperBound else { continue }
                         
                         let x = frequencyToX(peakFreq, size: size.width)
                         
                         let color: Color = index == 0 ? .yellow : .orange
-                        let lineWidth: CGFloat = index == 0 ? 0.5 : 0.5
                         
                         context.stroke(
                                 Path { path in
@@ -122,7 +144,7 @@ struct GraphView: View {
                                         path.addLine(to: CGPoint(x: x, y: size.height))
                                 },
                                 with: .color(color.opacity(0.8)),
-                                lineWidth: lineWidth
+                                lineWidth: 0.5
                         )
                         
                         let cents = 1200 * log2(peakFreq / targetFreq)

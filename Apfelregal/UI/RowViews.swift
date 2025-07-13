@@ -118,6 +118,9 @@ struct TargetNoteRow: View {
                 }
         }
         
+        
+
+        
         var body: some View {
                 HStack(spacing: 12) {
                         Button(action: { incrementNote(by: -12) }) {
@@ -170,7 +173,7 @@ struct TargetNoteRow: View {
                                         }
                                 }
                                 .onLongPressGesture(
-                                        minimumDuration: 1.0,
+                                        minimumDuration: 0.5,
                                         maximumDistance: .infinity,
                                         perform: {
                                                 print("DEBUG: Long press performed!")
@@ -256,7 +259,18 @@ struct TuningButtonStyle: ButtonStyle {
 
 struct ConcertPitchRow: View {
         @Binding var concertPitch: Double
+        @ObservedObject var study: Study
+        @ObservedObject var store: TuningParameterStore
+        
+        @State private var middleButtonWidth: CGFloat = 0
+
+        
         @State private var timer: Timer?
+        @State private var autoTuneJobID: UUID?
+        @State private var autoTuneCancellable: AnyCancellable?
+        
+        private let fineStep: Double  = 0.01
+        private let coarseStep: Double = 1.0
         
         private func startIncrementing(_ amount: Double) {
                 timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
@@ -269,6 +283,28 @@ struct ConcertPitchRow: View {
                 timer = nil
         }
         
+        private func startAutoConcertPitch() {
+                let job = AutoConcertPitchJob()
+                autoTuneJobID = job.id
+                
+                autoTuneCancellable = study.enqueue(job)
+                        .receive(on: DispatchQueue.main)
+                        .sink { [self] newPitch in
+                                if let pitch = newPitch {
+                                        concertPitch = pitch
+                                }
+                                autoTuneJobID = nil
+                                autoTuneCancellable = nil
+                        }
+        }
+        
+        private func cancelAutoTune() {
+                if let id = autoTuneJobID {
+                        study.cancelJob(id: id)
+                        autoTuneJobID = nil
+                        autoTuneCancellable = nil
+                }
+        }
         var body: some View {
                 HStack(spacing: 12) {
                         // Gross down
@@ -298,19 +334,40 @@ struct ConcertPitchRow: View {
                         )
                         
                         // Display
-                        Button(action: {}) {
+                        Button(action: {
+                                if autoTuneJobID != nil {
+                                        cancelAutoTune()
+                                }
+                        }) {
                                 VStack {
-                                        Text(String(format: "%.2f Hz", concertPitch))
-                                                .font(.system(.title2, design: .monospaced))
-                                        Text("Concert Pitch")
-                                                .font(.caption)
-                                                .opacity(0.7)
+                                        Text(String(format: "%.2f", concertPitch))
+                                                .font(.system(.title3))
                                 }
                                 .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(TuningButtonStyle())
-                        .onLongPressGesture {
-                                // Auto pitch functionality
+                                .padding(.horizontal, 2)
+                                .padding(.vertical, 8)
+                                .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                                .fill(autoTuneJobID != nil ?
+                                                      Color.red.opacity(0.6) :
+                                                        Color.accentColor.opacity(0.2))
+                                )
+                                .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                                .stroke(autoTuneJobID != nil ? Color.red : Color.accentColor, lineWidth: 1)
+                                )
+                                .onTapGesture {
+                                        if autoTuneJobID != nil {
+                                                cancelAutoTune()
+                                        }
+                                }
+                                .onLongPressGesture(
+                                        minimumDuration: 0.5,
+                                        maximumDistance: .infinity,
+                                        perform: {
+                                                startAutoConcertPitch()
+                                        }
+                                )
                         }
                         
                         // Fine up
@@ -341,6 +398,8 @@ struct ConcertPitchRow: View {
                 }
         }
 }
+ 
+
 
 // MARK: - Target Overtone Row
 
@@ -470,3 +529,5 @@ struct CarouselSelectorRow: View {
                 }
         }
 }
+
+

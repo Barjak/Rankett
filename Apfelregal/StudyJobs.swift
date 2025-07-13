@@ -165,3 +165,136 @@ struct AutoTuneJob: StudyJob {
                 abs(1200.0 * log2(f1 / f2))
         }
 }
+
+
+struct AutoConcertPitchJob: StudyJob {
+        let id = UUID()
+        var remainingFrames = Int.max
+        
+        private static let stabilityThresholdCents = 10.5
+        private static let snrDbNeeded = 20.0
+        private static let maxDeviationCents = 50.0
+        private static let ewmaAlpha = 0.85
+        private static let exitConfidence = 0.75
+        
+        private let startTime = CFAbsoluteTimeGetCurrent()
+        private let timeout: Double = 10.0
+        
+        private var confidence = 0.0
+        private var referenceFrequency: Double?
+        private var frequencyAccumulator = 0.0
+        private var sampleCount = 0
+        private var frameCount = 0
+        
+        mutating func ingest(frame: StudyResults, context: StudyContext) {
+                frameCount += 1
+                
+                guard CFAbsoluteTimeGetCurrent() - startTime < timeout else {
+                        print("AutoConcertPitch: Timeout reached")
+                        remainingFrames = 0
+                        return
+                }
+                
+                guard let preprocessor = context.preprocessor else {
+                        print("Missing preprocessor")
+                        updateConfidence(hit: false)
+                        return
+                }
+                guard let ekfFreq = context.ekfFrequency,
+                      let ekfAmp  = context.ekfAmplitude else {
+                        print("Missing EKF data")
+                        updateConfidence(hit: false)
+                        return
+                }
+                
+                let noiseFloorDb = noiseFloor(context.fullSpectrum)
+                
+                // Find the spectral peak near the EKF frequency
+                let currentFrequency = preprocessor.fBaseband + ekfFreq
+                guard let peakBin = context.fullFrequencies.firstIndex(where: { $0 >= currentFrequency }),
+                      peakBin > 0 && peakBin < context.fullSpectrum.count else {
+                        updateConfidence(hit: false)
+                        return
+                }
+                
+                let peakDb = context.fullSpectrum[peakBin]
+                let snrDb = peakDb - noiseFloorDb
+                
+                print("AutoConcertPitch frame \(frameCount): peak=\(peakDb)dB, noise=\(noiseFloorDb)dB, SNR=\(snrDb)dB, confidence=\(confidence)")
+                
+                if snrDb < Self.snrDbNeeded {
+                        updateConfidence(hit: false)
+                        return
+                }
+                
+                let deviationCents = abs(1200.0 * log2(1.0 + ekfFreq / preprocessor.fBaseband))
+                
+                if deviationCents >= Self.maxDeviationCents {
+                        print("AutoConcertPitch frame \(frameCount): Large deviation \(deviationCents) cents")
+                        updateConfidence(hit: false)
+                        return
+                }
+                
+                if let refFreq = referenceFrequency {
+                        let cents = abs(1200.0 * log2(currentFrequency / refFreq))
+                        let isStable = cents < Self.stabilityThresholdCents
+                        updateConfidence(hit: isStable)
+                        
+                        if isStable {
+                                frequencyAccumulator += currentFrequency
+                                sampleCount += 1
+                        } else if cents > Self.stabilityThresholdCents * 2 {
+                                print("AutoConcertPitch: Reset reference, deviation \(cents) cents")
+                                referenceFrequency = currentFrequency
+                                frequencyAccumulator = currentFrequency
+                                sampleCount = 1
+                        }
+                } else {
+                        referenceFrequency = currentFrequency
+                        frequencyAccumulator = currentFrequency
+                        sampleCount = 1
+                        updateConfidence(hit: true)
+                        print("AutoConcertPitch: Set initial reference to \(currentFrequency) Hz")
+                }
+                
+                if confidence >= Self.exitConfidence {
+                        print("AutoConcertPitch: Exit condition met! confidence=\(confidence), samples=\(sampleCount)")
+                        remainingFrames = 0
+                }
+        }
+        
+        func finish(using study: Study) -> Double? {
+                guard confidence >= Self.exitConfidence, sampleCount > 0 else {
+                        print("AutoConcertPitch: Failed - confidence=\(confidence), samples=\(sampleCount)")
+                        return nil
+                }
+                
+                let averageFreq = frequencyAccumulator / Double(sampleCount)
+                let targetFreq = study.store.targetFrequency()
+                guard targetFreq > 0 else { return nil }
+                
+                let newPitch = study.store.concertPitch * (averageFreq / targetFreq)
+                print("AutoConcertPitch: Success! avg=\(averageFreq), target=\(targetFreq), newPitch=\(newPitch)")
+                return newPitch
+        }
+        
+        private mutating func updateConfidence(hit: Bool) {
+                confidence = Self.ewmaAlpha * confidence + (1 - Self.ewmaAlpha) * (hit ? 1.0 : 0.0)
+        }
+        
+        private func noiseFloor(_ x: ArraySlice<Double>) -> Double {
+                let n = Double(x.count)
+                var mean = 0.0
+                var sumSq = 0.0
+                
+                x.withUnsafeBufferPointer { ptr in
+                        vDSP_meanvD(ptr.baseAddress!, 1, &mean, vDSP_Length(x.count))
+                        vDSP_measqvD(ptr.baseAddress!, 1, &sumSq, vDSP_Length(x.count))
+                }
+                
+                let variance = sumSq - mean * mean
+                let sd = sqrt(max(variance, 0))
+                
+                return mean + 2.0 * sd
+        }
+}

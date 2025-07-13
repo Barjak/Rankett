@@ -39,7 +39,9 @@ struct TuningControlsView: View {
                         .frame(height: 70) // Slightly taller as specified
                         
                         // Concert pitch controls
-                        ConcertPitchRow(concertPitch: $store.concertPitch)
+                        ConcertPitchRow(concertPitch: $store.concertPitch,
+                                        study: self.study,
+                                        store: store)
                                 .frame(height: 50)
                         
                         // Target overtone controls

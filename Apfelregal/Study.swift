@@ -13,6 +13,8 @@ struct StudyContext {
         let fullSamples: [Double]
         let sampleRate: Double
         let preprocessor: StreamingPreprocessor?
+        let ekfFrequency: Double?
+        let ekfAmplitude: Double?
 }
 
 protocol StudyJob: Identifiable {
@@ -232,14 +234,28 @@ final class Study: ObservableObject {
                 let logDecimatedFrequencies = binMapper.frequencies
                 
                 var trackedPeaks: [Double] = []
-                if let ekf = dualModeEKF, let preprocessor = preprocessor {
+                var ekfFrequency: Double?
+                var ekfAmplitude: Double?
+                
+                if let ekf = dualModeEKF, !basebandSamples.isEmpty {
+                        for sample in basebandSamples {
+                                _ = ekf.update(i: sample.real, q: sample.imag)
+                        }
+                        
                         let state = ekf.update(i: 0, q: 0)
-                        if let frequencies = state["freqs"] as? [Double] {
-                                trackedPeaks = frequencies.map { freq in
-                                        preprocessor.fBaseband + freq
-                                }
+                        if let freqs = state["freqs"] as? [Double],
+                           let amps  = state["amplitudes"] as? [Double],
+                           !freqs.isEmpty {
+                                
+                                // 1. All peaks for the UI:
+                                trackedPeaks = freqs.map { preprocessor!.fBaseband + $0 }
+                                
+                                // 2. Primary track (index 0 – loudest):
+                                ekfFrequency = freqs[0]
+                                ekfAmplitude = amps[0]
                         }
                 }
+                
                 
                 frameCounter += 1
                 let results = StudyResults(
@@ -265,7 +281,9 @@ final class Study: ObservableObject {
                         basebandSamples: basebandSamples,
                         fullSamples: fullSamples,
                         sampleRate: store.audioSampleRate,
-                        preprocessor: preprocessor
+                        preprocessor: preprocessor,
+                        ekfFrequency: ekfFrequency,
+                        ekfAmplitude: ekfAmplitude
                 )
                 
                 processJobs(with: results, context: context)

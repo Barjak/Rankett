@@ -219,4 +219,7 @@ class DualModeEKF {
                         "slowState": slowEKF.getState()
                 ]
         }
+        func getAmplitude() -> Double {
+                return mode == .fast ? fastEKF.x[2] : slowEKF.x[2]
+        }
 }

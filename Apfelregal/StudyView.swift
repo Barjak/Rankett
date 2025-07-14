@@ -4,13 +4,34 @@ struct GraphView: View {
         @ObservedObject var study: Study
         @ObservedObject var store: TuningParameterStore
         
+        // Drawing constants
+        private let spectrumColor = Color.cyan
+        private let spectrumLineWidth: CGFloat = 0.8
+        private let primaryPeakColor = Color.yellow
+        private let secondaryPeakColor = Color.orange
+        private let peakLineWidth: CGFloat = 0.5
+        private let peakLineOpacity: Double = 0.8
+        private let gridLineColor = Color.gray.opacity(0.3)
+        private let gridLineWidth: CGFloat = 1
+        private let axisLineColor = Color.white
+        private let axisLineWidth: CGFloat = 2
+        private let labelFont = Font.caption
+        private let labelColor = Color.gray
+        private let backgroundOpacity: Double = 0.9
+        private let zoomButtonPadding: CGFloat = 12
+        private let zoomButtonBackgroundOpacity: Double = 0.6
+        private let dbGridStep: Double = 20.0
+        private let maxPeakCount = 20
+        
+        struct PeakData {
+                var target: Double
+                var smoothed: Double
+        }
+        
         @State private var smoothedSpectrum: [Double] = []
         @State private var targetSpectrum: [Double] = []
         @State private var currentFrequencies: [Double] = []
-        @State private var smoothedPeaks: [Double] = Array(repeating: 0, count: 20)
-        @State private var targetPeaks: [Double] = Array(repeating: 0, count: 20)
-
-
+        @State private var peaks: [PeakData] = Array(repeating: PeakData(target: 0, smoothed: 0), count: 20)
         
         var frequencyRange: ClosedRange<Double> {
                 store.viewportMinFreq...store.viewportMaxFreq
@@ -26,7 +47,7 @@ struct GraphView: View {
                         GeometryReader { geometry in
                                 ZStack {
                                         Rectangle()
-                                                .fill(Color.black.opacity(0.9))
+                                                .fill(Color.black.opacity(backgroundOpacity))
                                         
                                         plotView(size: geometry.size)
                                         
@@ -38,11 +59,11 @@ struct GraphView: View {
                                                                         .font(.title2)
                                                                         .foregroundColor(.white)
                                                                         .padding(8)
-                                                                        .background(Color.black.opacity(0.6))
+                                                                        .background(Color.black.opacity(zoomButtonBackgroundOpacity))
                                                                         .clipShape(Circle())
                                                         }
-                                                        .padding(.trailing, 12)
-                                                        .padding(.top, 12)
+                                                        .padding(.trailing, zoomButtonPadding)
+                                                        .padding(.top, zoomButtonPadding)
                                                 }
                                                 Spacer()
                                         }
@@ -56,14 +77,9 @@ struct GraphView: View {
                         if let results = study.results {
                                 targetSpectrum = results.logDecimatedSpectrum
                                 currentFrequencies = results.logDecimatedFrequencies
-                        }
-                        if let results = study.results {
-                                targetSpectrum = results.logDecimatedSpectrum
-                                currentFrequencies = results.logDecimatedFrequencies
                                 
-                                // Copy peaks to target array
-                                for i in 0..<20 {
-                                        targetPeaks[i] = i < results.trackedPeaks.count ? results.trackedPeaks[i] : 0
+                                for i in 0..<maxPeakCount {
+                                        peaks[i].target = i < results.trackedPeaks.count ? results.trackedPeaks[i] : 0
                                 }
                         }
                 }
@@ -99,12 +115,11 @@ struct GraphView: View {
                         }
                 }
                 
-                // Smooth peaks
-                for i in 0..<20 {
-                        if targetPeaks[i] > 0 {
-                                smoothedPeaks[i] = smoothedPeaks[i] * factor + targetPeaks[i] * (1 - factor)
+                for i in 0..<maxPeakCount {
+                        if peaks[i].target > 0 {
+                                peaks[i].smoothed = peaks[i].smoothed * factor + peaks[i].target * (1 - factor)
                         } else {
-                                smoothedPeaks[i] = 0
+                                peaks[i].smoothed = 0
                         }
                 }
         }
@@ -119,43 +134,41 @@ struct GraphView: View {
                 Canvas { context, canvasSize in
                         drawGrid(context: context, size: canvasSize)
                         drawSpectrum(context: context, size: canvasSize)
-                        drawPeakLine(context: context, size: canvasSize)  // Add this line
+                        drawPeakLines(context: context, size: canvasSize)
                         drawAxes(context: context, size: canvasSize)
                 }
         }
-        private func drawPeakLine(context: GraphicsContext, size: CGSize) {
-                guard let results = study.results,
-                      !results.trackedPeaks.isEmpty else { return }
-                
+        
+        private func drawPeakLines(context: GraphicsContext, size: CGSize) {
                 let freqRange = frequencyRange
                 let targetFreq = store.targetFrequency()
                 
-                for index in 0..<min(results.trackedPeaks.count, 20) {
-                        let peakFreq = smoothedPeaks[index]
+                for index in 0..<maxPeakCount {
+                        let peakFreq = peaks[index].smoothed
                         guard peakFreq > 0 && peakFreq >= freqRange.lowerBound && peakFreq <= freqRange.upperBound else { continue }
                         
                         let x = frequencyToX(peakFreq, size: size.width)
                         
-                        let color: Color = index == 0 ? .yellow : .orange
+                        let color: Color = index == 0 ? primaryPeakColor : secondaryPeakColor
                         
                         context.stroke(
                                 Path { path in
                                         path.move(to: CGPoint(x: x, y: 0))
                                         path.addLine(to: CGPoint(x: x, y: size.height))
                                 },
-                                with: .color(color.opacity(0.8)),
-                                lineWidth: 0.5
+                                with: .color(color.opacity(peakLineOpacity)),
+                                lineWidth: peakLineWidth
                         )
                         
                         let cents = 1200 * log2(peakFreq / targetFreq)
                         let text = Text(String(format: "%.2f¢", cents))
-                                .font(.caption)
+                                .font(labelFont)
                                 .foregroundColor(color)
                         
                         context.draw(text, at: CGPoint(x: x + 5, y: 20 + CGFloat(index) * 15))
                 }
         }
-
+        
         private func drawSpectrum(context: GraphicsContext, size: CGSize) {
                 guard !smoothedSpectrum.isEmpty,
                       !currentFrequencies.isEmpty,
@@ -203,16 +216,16 @@ struct GraphView: View {
                 
                 context.stroke(
                         path,
-                        with: .color(.cyan),
-                        lineWidth: 0.8
+                        with: .color(spectrumColor),
+                        lineWidth: spectrumLineWidth
                 )
         }
         
         private func drawGrid(context: GraphicsContext, size: CGSize) {
                 let freqRange = frequencyRange
-                let gridFrequencies = gridLines(min: freqRange.lowerBound, max: freqRange.upperBound)
+                let gridFrequencies = musicalGridFrequencies(min: freqRange.lowerBound, max: freqRange.upperBound)
                 
-                for freq in gridFrequencies {
+                for (freq, noteName) in gridFrequencies {
                         let x = frequencyToX(freq, size: size.width)
                         
                         context.stroke(
@@ -220,28 +233,32 @@ struct GraphView: View {
                                         path.move(to: CGPoint(x: x, y: 0))
                                         path.addLine(to: CGPoint(x: x, y: size.height))
                                 },
-                                with: .color(.gray.opacity(0.3)),
-                                lineWidth: 1
+                                with: .color(gridLineColor),
+                                lineWidth: gridLineWidth
                         )
+                        
+                        let text = Text(noteName)
+                                .font(.caption2)
+                                .foregroundColor(labelColor)
+                        
+                        context.draw(text, at: CGPoint(x: x, y: size.height - 10))
                 }
                 
-                let dbLines = stride(from: store.minDB, through: 0, by: 10)
-                
-                for db in dbLines {
-                        let y = size.height - (CGFloat(db - store.minDB) / CGFloat(store.maxDB - store.minDB)) * size.height
+                for db in stride(from: store.minDB, through: store.maxDB, by: dbGridStep) {
+                        let y = size.height * (1 - CGFloat((db - store.minDB) / (store.maxDB - store.minDB)))
                         
                         context.stroke(
                                 Path { path in
                                         path.move(to: CGPoint(x: 0, y: y))
                                         path.addLine(to: CGPoint(x: size.width, y: y))
                                 },
-                                with: .color(.gray.opacity(0.3)),
-                                lineWidth: 1
+                                with: .color(gridLineColor),
+                                lineWidth: gridLineWidth
                         )
                         
                         let text = Text("\(Int(db))dB")
                                 .font(.caption2)
-                                .foregroundColor(.gray)
+                                .foregroundColor(labelColor)
                         
                         context.draw(text, at: CGPoint(x: 10, y: y - 5))
                 }
@@ -253,8 +270,8 @@ struct GraphView: View {
                                 path.move(to: CGPoint(x: 0, y: size.height))
                                 path.addLine(to: CGPoint(x: size.width, y: size.height))
                         },
-                        with: .color(.white),
-                        lineWidth: 2
+                        with: .color(axisLineColor),
+                        lineWidth: axisLineWidth
                 )
                 
                 context.stroke(
@@ -262,8 +279,8 @@ struct GraphView: View {
                                 path.move(to: CGPoint(x: 0, y: 0))
                                 path.addLine(to: CGPoint(x: 0, y: size.height))
                         },
-                        with: .color(.white),
-                        lineWidth: 2
+                        with: .color(axisLineColor),
+                        lineWidth: axisLineWidth
                 )
         }
         
@@ -284,28 +301,59 @@ struct GraphView: View {
                 }
         }
         
-        private func gridLines(min: Double, max: Double) -> [Double] {
-                if !isUsingLogScale {
-                        let step = (max - min) / 10
-                        return stride(from: min, through: max, by: step).map { $0 }
-                }
+        private func musicalGridFrequencies(min: Double, max: Double) -> [(frequency: Double, label: String)] {
+                var lines: [(Double, String)] = []
+                let concertPitch = store.concertPitch
+                let range = max / min
                 
-                var lines: [Double] = []
-                let logMin = log10(min)
-                let logMax = log10(max)
-                let decades = Int(logMax) - Int(logMin) + 1
-                
-                for decade in 0...decades {
-                        let base = pow(10, Double(Int(logMin) + decade))
-                        for mult in [1.0, 2.0, 5.0] {
-                                let freq = base * mult
+                if range > 8 {
+                        // Wide view: show octaves only
+                        for midiNote in 0...127 {
+                                if midiNote % 12 == 0 {  // C notes only
+                                        let note = Note(midiNumber: midiNote)
+                                        let freq = note.frequency(concertA: concertPitch)
+                                        if freq >= min && freq <= max {
+                                                lines.append((freq, organNotationLabel(note)))
+                                        }
+                                }
+                        }
+                } else if range > 2 {
+                        // Medium view: show all C, E, G notes
+                        for midiNote in 0...127 {
+                                let noteInOctave = midiNote % 12
+                                if noteInOctave == 0 || noteInOctave == 4 || noteInOctave == 7 {
+                                        let note = Note(midiNumber: midiNote)
+                                        let freq = note.frequency(concertA: concertPitch)
+                                        if freq >= min && freq <= max {
+                                                lines.append((freq, organNotationLabel(note)))
+                                        }
+                                }
+                        }
+                } else {
+                        // Narrow view: show all semitones
+                        for midiNote in 0...127 {
+                                let note = Note(midiNumber: midiNote)
+                                let freq = note.frequency(concertA: concertPitch)
                                 if freq >= min && freq <= max {
-                                        lines.append(freq)
+                                        lines.append((freq, organNotationLabel(note)))
                                 }
                         }
                 }
                 
                 return lines
+        }
+        
+        private func organNotationLabel(_ note: Note) -> String {
+                let baseName = note.displayName
+                let octave = note.octave
+                
+                if octave < 3 {
+                        return baseName + String(octave - 3)
+                } else if octave == 3 {
+                        return baseName
+                } else {
+                        return baseName.lowercased() + (octave > 4 ? String(octave - 4) : "")
+                }
         }
 }
 
@@ -334,12 +382,21 @@ struct StudyView: View {
                         
                         Spacer()
                         
-                        if let results = study.results {
-                                Text(results.isBaseband ? "Baseband" : "Full Spectrum")
-                                        .font(.caption)
-                                        .foregroundColor(.gray)
-                        }
+                        Text(zoomStateLabel)
+                                .font(.caption)
+                                .foregroundColor(.gray)
                 }
                 .padding(.horizontal)
+        }
+        
+        private var zoomStateLabel: String {
+                switch store.zoomState {
+                case .fullSpectrum:
+                        return "Full Spectrum"
+                case .threeOctaves:
+                        return "Three Octaves"
+                case .targetFundamental:
+                        return "Target ±\(Int(store.targetBandwidth))¢"
+                }
         }
 }
